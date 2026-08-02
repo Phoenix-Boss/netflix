@@ -1,4 +1,4 @@
-﻿VERSION = "12.0.0"
+VERSION = "13.0.0"
 from .vidapi import extract, format_sources, extract_quality
 from .subtitles import get_subtitles
 from .utils import fetch, error
