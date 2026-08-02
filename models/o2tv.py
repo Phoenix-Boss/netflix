@@ -1,4 +1,5 @@
-﻿import asyncio
+﻿﻿import os
+mport asyncio
 import re
 import io
 import shutil
@@ -25,7 +26,7 @@ def preprocess_captcha(img_bytes):
 async def extract(title: str, season: int, episode: int):
     slug = title.replace(" ", "-")
     base_url = "https://o2tvseries4u.com"
-    async with AsyncSession(impersonate="chrome", verify=False) as session:
+    async with AsyncSession(impersonate="chrome", verify=False, proxy=os.getenv("PROXY_URL")) as session:
         resp = await session.get(f"{base_url}/{slug}/index.html")
         if resp.status_code != 200 or slug not in resp.url: return None
         resp = await session.get(f"{base_url}/{slug}/Season-{season:02d}/index.html")

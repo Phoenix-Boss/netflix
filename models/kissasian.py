@@ -1,4 +1,5 @@
-﻿import re, base64
+﻿﻿import os
+mport re, base64
 from typing import Optional, Dict, List
 from curl_cffi import requests as curl_requests
 from Crypto.Cipher import AES
@@ -9,7 +10,7 @@ class KissAsianExtractor:
     PLAYER_URL = "https://player.dramavideo.se"
 
     def __init__(self):
-        self.session = curl_requests.Session(impersonate="chrome131")
+        self.session = curl_requests.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL"))
         self.session.timeout = 20
 
     def search(self, title: str) -> List[Dict]:

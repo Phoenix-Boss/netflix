@@ -1,4 +1,5 @@
-﻿import re
+﻿﻿import os
+mport re
 import asyncio
 from urllib.parse import quote_plus
 from curl_cffi.requests import AsyncSession
@@ -27,7 +28,7 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
     try:
-        async with AsyncSession(impersonate="chrome", verify=False) as session:
+        async with AsyncSession(impersonate="chrome", verify=False, proxy=os.getenv("PROXY_URL")) as session:
             # STEP 1: Search
             search_url = f"{BASE_URL}/csearch.php?searchname={quote_plus(title)}"
             resp = await session.get(search_url, headers=headers)

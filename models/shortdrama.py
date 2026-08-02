@@ -1,4 +1,5 @@
-import re,json
+﻿﻿import os
+mport re,json
 from typing import Optional,Dict,List
 from curl_cffi import requests as curl_requests
 
@@ -9,7 +10,7 @@ class ShortDramaExtractor:
     }
     
     def __init__(self):
-        self.session = curl_requests.Session(impersonate="chrome131")
+        self.session = curl_requests.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL"))
         self.session.timeout = 20
     
     def search(self, title: str, site: str = "reelshort") -> List[Dict]:

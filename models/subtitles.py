@@ -1,4 +1,5 @@
-﻿from curl_cffi.requests import AsyncSession
+﻿﻿import os
+rom curl_cffi.requests import AsyncSession
 from urllib.parse import quote
 
 _SBDL_KEY = "subdl_qFxEpBh6BuFCLpPB0YxC1YS0s0VBstg1Te7obtj4jmY"
@@ -49,7 +50,7 @@ async def _subdl(imdb_id, media_type, s, e):
         params["type"] = media_type
     qs = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
     url = f"https://api.subdl.com/api/v1/subtitles?{qs}"
-    async with AsyncSession(impersonate="chrome") as session:
+    async with AsyncSession(impersonate="chrome", proxy=os.getenv("PROXY_URL")) as session:
         resp = await session.get(url, timeout=15)
         if resp.status_code != 200:
             print(f"[subs] SubDL status: {resp.status_code}")
@@ -91,7 +92,7 @@ async def _os_download(imdb_id, media_type, s, e):
     url = f"https://api.opensubtitles.com/api/v1/subtitles?imdb_id={imdb_id}&languages=en"
     if media_type == "tv" and s is not None and e is not None:
         url += f"&season_number={s}&episode_number={e}"
-    async with AsyncSession(impersonate="chrome") as session:
+    async with AsyncSession(impersonate="chrome", proxy=os.getenv("PROXY_URL")) as session:
         resp = await session.get(url, headers={"Api-Key": _OS_KEY, "User-Agent": "VidSrc-API/1.0"}, timeout=15)
         if resp.status_code != 200:
             return []
@@ -124,7 +125,7 @@ async def _os_pages(imdb_id, media_type, s, e):
     url = f"https://api.opensubtitles.com/api/v1/subtitles?imdb_id={imdb_id}&languages=en"
     if media_type == "tv" and s is not None and e is not None:
         url += f"&season_number={s}&episode_number={e}"
-    async with AsyncSession(impersonate="chrome") as session:
+    async with AsyncSession(impersonate="chrome", proxy=os.getenv("PROXY_URL")) as session:
         resp = await session.get(url, headers={"Api-Key": _OS_KEY, "User-Agent": "VidSrc-API/1.0"}, timeout=15)
         if resp.status_code != 200:
             return []

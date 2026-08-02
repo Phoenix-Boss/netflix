@@ -1,4 +1,5 @@
-﻿import re, json, time, asyncio
+﻿﻿import os
+mport re, json, time, asyncio
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from .utils import fetch_session, is_stream_alive
@@ -30,7 +31,7 @@ async def extract(dbid, s=None, e=None, retry=True):
 async def _do_extract(dbid, media_type, s, e):
     all_domains = VIDSRC_DOMAINS + FALLBACK_DOMAINS
     
-    async with AsyncSession(impersonate="chrome", verify=False) as session:
+    async with AsyncSession(impersonate="chrome", verify=False, proxy=os.getenv("PROXY_URL")) as session:
         for domain in all_domains:
             try:
                 if media_type == "tv":

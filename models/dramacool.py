@@ -1,4 +1,5 @@
-﻿import re, base64, asyncio, json
+﻿﻿import os
+mport re, base64, asyncio, json
 from typing import Optional, Dict, List
 from curl_cffi import requests as cr
 from bs4 import BeautifulSoup
@@ -14,7 +15,7 @@ class DramacoolExtractor:
 
     def __init__(self):
         global _CACHED_MIRROR
-        self.s = cr.Session(impersonate="chrome131")
+        self.s = cr.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL"))
         self.s.timeout = 20
         if _CACHED_MIRROR:
             self.B = _CACHED_MIRROR
@@ -24,7 +25,7 @@ class DramacoolExtractor:
 
     def _ok(self, url):
         try:
-            r = cr.Session(impersonate="chrome131").get(url, timeout=8)
+            r = cr.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL")).get(url, timeout=8)
             return r.status_code == 200 and "Just a moment" not in r.text and "drama-detail" in r.text
         except:
             return False
