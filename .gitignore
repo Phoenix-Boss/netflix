@@ -1,0 +1,29 @@
+﻿# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.pyo
+
+# Environment Variables
+.env
+.env.local
+
+# Testing / Artifacts
+*.js
+*.ps1
+*.png
+*.html
+test*.py
+dump*.py
+debug*.py
+inspect*.py
+analyze_api.py
+o2tv.py
+trace_flex.js
+test_tv.js
+captcha_temp.png
+debug_raw.png
+debug_processed.png
+raw_captcha.png
+search_dump.html
+captcha_dump.html
