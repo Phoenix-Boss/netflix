@@ -69,4 +69,6 @@ def format_source(result: dict, subs=None, needs_transcode: bool = False):
             "quality": "auto",
             "title": result.get("show", ""),
             "episode": f'S{str(result.get("season", "")).zfill(2)}E{str(result.get("episode", "")).zfill(2)}',
-            "needs_transcode": needs_tr
+            "needs_transcode": needs_transcode
+        }
+    }]

@@ -4,6 +4,7 @@ __pycache__/
 .pyo
 .env
 .env.local
+*.js
 *.png
 *.html
 test*.py
@@ -11,4 +12,3 @@ dump*.py
 debug*.py
 inspect*.py
 analyze_api.py
-trace_flex.js

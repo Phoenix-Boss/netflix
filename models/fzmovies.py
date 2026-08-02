@@ -1,78 +1,152 @@
-﻿import json
+﻿import re
 import asyncio
-import os
+from urllib.parse import quote_plus
+from curl_cffi.requests import AsyncSession
+
+BASE_URL = "https://fzmovies.live"
+
+def get_similarity(a: str, b: str) -> float:
+    """Exact Python translation of the JS Levenshtein logic"""
+    a = re.sub(r'[^a-z0-9]', '', a.lower())
+    b = re.sub(r'[^a-z0-9]', '', b.lower())
+    if a == b: return 100.0
+    if a and b and (a in b or b in a): return 100.0
+    if not a or not b: return 0.0
+    
+    matrix = [[j for j in range(len(a) + 1)] for i in range(len(b) + 1)]
+    for i in range(1, len(b) + 1):
+        for j in range(1, len(a) + 1):
+            if b[i-1] == a[j-1]:
+                matrix[i][j] = matrix[i-1][j-1]
+            else:
+                matrix[i][j] = min(matrix[i-1][j-1] + 1, matrix[i][j-1] + 1, matrix[i-1][j] + 1)
+    max_len = max(len(a), len(b))
+    return ((max_len - matrix[len(b)][len(a)]) / max_len) * 100
 
 async def get_fallback_stream(title: str, requested_quality: str = None):
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'test.js')
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
-    if not os.path.exists(script_path):
-        print("[fzmovies] Error: test.js not found in root directory.")
-        return None
-        
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "node", script_path, title,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
-        
-        if proc.returncode != 0 or not stdout:
-            return None
+        async with AsyncSession(impersonate="chrome", verify=False) as session:
+            # STEP 1: Search
+            search_url = f"{BASE_URL}/csearch.php?searchname={quote_plus(title)}"
+            resp = await session.get(search_url, headers=headers)
+            if resp.status_code != 200: return None
             
-        results = json.loads(stdout.decode('utf-8'))
-        if not results:
-            return None
+            html = resp.text
+            search_results = []
+            # Match the exact regex from test.js
+            for match in re.finditer(r'href=\"(movie-[^"]+\.htm)\"[^>]*>([\s\S]*?)<\/a>', html, re.IGNORECASE):
+                raw_text = re.sub(r'<[^>]*>', '', match.group(2)).replace('\s', ' ').strip()
+                if len(raw_text) > 3:
+                    ym = re.search(r'\((\d{4})\)', raw_text)
+                    search_results.append({
+                        "url": match.group(1),
+                        "title": raw_text,
+                        "year": int(ym.group(1)) if ym else 0
+                    })
             
-        def get_q_score(file_name):
-            fn = file_name.lower()
-            if "2160p" in fn or "4k" in fn: return 0
-            if "1080p" in fn: return 1
-            if "720p" in fn: return 2
-            if "webrip" in fn or "bluray" in fn: return 2.5
-            if "480p" in fn: return 3
-            if "camrip" in fn or "hdcam" in fn: return 4
-            return 99
+            # Sort by year descending
+            search_results.sort(key=lambda x: x["year"], reverse=True)
             
-        results.sort(key=lambda x: get_q_score(x['file']))
-        
-        selected = None
-        needs_transcode = False
-        actual_quality = "auto"
-        
-        if requested_quality:
-            req_q = requested_quality.lower().replace("p", "")
-            for res in results:
-                if req_q in res['file'].lower():
-                    selected = res
-                    actual_quality = requested_quality
+            selected_movie = None
+            for res in search_results:
+                if get_similarity(title, res["title"]) >= 90:
+                    selected_movie = res
                     break
+            if not selected_movie: return None
+
+            # STEP 2: Get Quality Links
+            movie_url = f"{BASE_URL}/{selected_movie['url'].lstrip('/')}"
+            resp = await session.get(movie_url, headers=headers)
+            if resp.status_code != 200: return None
             
-            if not selected and results:
-                selected = results[0]
-                needs_transcode = True
-                for q in ["2160p", "4k", "1080p", "720p", "480p"]:
-                    if q in selected['file'].lower():
-                        actual_quality = q
+            qualities = []
+            seen_urls = set()
+            # Find all download1.php links
+            for match in re.finditer(r'href=[\"\'](.*?download1\.php[^\"\']*)[\"\']|onclick=[\"\'](.*?download1\.php[^\"\']*)[\"\']', resp.text, re.IGNORECASE):
+                url = match.group(1) or match.group(2)
+                if not url or url in seen_urls: continue
+                seen_urls.add(url)
+                
+                if not url.startswith("http"):
+                    url = f"{BASE_URL}/{url.lstrip('/')}"
+                
+                # Try to find the .mp4/.mkv text and size near the link
+                block = resp.text[max(0, match.start()-200):match.end()+100]
+                text_match = re.search(r'([\w\.\s\-]+\.(?:mp4|mkv))', block, re.IGNORECASE)
+                size_match = re.search(r'\(\s*(\d+(?:\.\d+)?)\s*(MB|GB)\s*\)', block, re.IGNORECASE)
+                
+                qualities.append({
+                    "url": url,
+                    "text": text_match.group(1).strip() if text_match else "Unknown.mp4",
+                    "size": f"{size_match.group(1)} {size_match.group(2).upper()}" if size_match else "Unknown"
+                })
+
+            # STEP 3: Get Final dlink.php URLs
+            final_results = []
+            for quality in qualities:
+                try:
+                    resp = await session.get(quality["url"], headers=headers, allow_redirects=True)
+                    if resp.status_code != 200: continue
+                    
+                    # Look for the final dlink.php link
+                    dlinks = re.findall(r'href=[\"\'](dlink\.php\?[^\"\']+)[\"\']', resp.text, re.IGNORECASE)
+                    if dlinks:
+                        final_results.append({
+                            "file": quality["text"],
+                            "size": quality["size"],
+                            "downloads": [f"{BASE_URL}/{dl.lstrip('/')}" if not dl.startswith('http') else dl for dl in dlinks]
+                        })
+                except Exception:
+                    continue
+                    
+            if not final_results: return None
+
+            # STEP 4: Quality Selection Logic (Exact same as before)
+            def get_q_score(file_name):
+                fn = file_name.lower()
+                if "2160p" in fn or "4k" in fn: return 0
+                if "1080p" in fn: return 1
+                if "720p" in fn: return 2
+                if "webrip" in fn or "bluray" in fn: return 2.5
+                if "480p" in fn: return 3
+                if "camrip" in fn or "hdcam" in fn: return 4
+                return 99
+                
+            final_results.sort(key=lambda x: get_q_score(x['file']))
+            selected = None
+            needs_transcode = False
+            actual_quality = "auto"
+            
+            if requested_quality:
+                req_q = requested_quality.lower().replace("p", "")
+                for res in final_results:
+                    if req_q in res['file'].lower():
+                        selected = res
+                        actual_quality = requested_quality
                         break
-        else:
-            selected = results[0]
+                if not selected and final_results:
+                    selected = final_results[0]
+                    needs_transcode = True
+                    for q in ["2160p", "4k", "1080p", "720p", "480p"]:
+                        if q in selected['file'].lower():
+                            actual_quality = q
+                            break
+            else:
+                selected = final_results[0]
+                
+            if not selected or not selected.get('downloads'):
+                return None
+                
+            return {
+                "stream": selected['downloads'][0],
+                "quality": actual_quality,
+                "needs_transcode": needs_transcode,
+                "title": selected['file'],
+                "size": selected['size']
+            }
             
-        if not selected or not selected.get('downloads'):
-            return None
-            
-        return {
-            "stream": selected['downloads'][0],
-            "quality": actual_quality,
-            "needs_transcode": needs_transcode,
-            "title": selected['file'],
-            "size": selected['size']
-        }
-        
-    except asyncio.TimeoutError:
-        print("[fzmovies] Timeout reached (90s)")
-        return None
     except Exception as e:
-        print(f"[fzmovies] Parsing error: {e}")
+        print(f"[fzmovies] Error: {e}")
         return None
