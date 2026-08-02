@@ -5,8 +5,9 @@ RUN apt-get update && apt-get install -y build-essential libcurl4-openssl-dev li
 WORKDIR /app
 ENV HTTPS_PROXY=
 ENV HTTP_PROXY=
+ENV PORT=10000
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --quiet -r requirements.txt
 COPY . .
-CMD sh -c "uvicorn main:app --host 0.0.0.0 --port "
+CMD sh -c "uvicorn main:app --host 0.0.0.0 --port \"
