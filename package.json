@@ -1,7 +1,1 @@
-{
-  "name": "netflix-api",
-  "version": "1.0.0",
-  "engines": {
-    "node": "20.x"
-  }
-}
+﻿{"dependencies": {"playwright": "^1.40.0"}}
