@@ -8,7 +8,6 @@ BASE_URL = "https://fzmovies.live"
 
 
 def _get_proxy():
-    """Get proxy URL from environment. Render uses HTTPS_PROXY/HTTP_PROXY."""
     return (
         os.environ.get("HTTPS_PROXY") or
         os.environ.get("HTTP_PROXY") or
@@ -20,7 +19,6 @@ def _get_proxy():
 
 
 def get_similarity(a: str, b: str) -> float:
-    """Exact Python translation of the JS Levenshtein logic"""
     a = re.sub(r'[^a-z0-9]', '', a.lower())
     b = re.sub(r'[^a-z0-9]', '', b.lower())
     if a == b: return 100.0
@@ -45,12 +43,15 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
         async with AsyncSession(impersonate="chrome", verify=False, proxy=_get_proxy()) as session:
             # STEP 1: Search
             search_url = f"{BASE_URL}/csearch.php?searchname={quote_plus(title)}"
-            resp = await session.get(search_url, headers=headers)
-            if resp.status_code != 200: return None
+            print(f"[fzmovies] Searching: {search_url}")
+            resp = await session.get(search_url, headers=headers, timeout=15)
+            print(f"[fzmovies] Search status: {resp.status_code} | Length: {len(resp.text)}")
+            if resp.status_code != 200:
+                print(f"[fzmovies] Search failed with status {resp.status_code}")
+                return None
 
             html = resp.text
             search_results = []
-            # Match the exact regex from test.js
             for match in re.finditer(r'href=\"(movie-[^"]+\.htm)\"[^>]*>([\s\S]*?)<\/a>', html, re.IGNORECASE):
                 raw_text = re.sub(r'<[^>]*>', '', match.group(2)).replace('\s', ' ').strip()
                 if len(raw_text) > 3:
@@ -61,24 +62,35 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
                         "year": int(ym.group(1)) if ym else 0
                     })
 
-            # Sort by year descending
+            print(f"[fzmovies] Found {len(search_results)} results")
+            for r in search_results[:5]:
+                sim = get_similarity(title, r["title"])
+                print(f"[fzmovies]   '{r['title']}' (year={r['year']}, sim={sim:.1f}%)")
+
             search_results.sort(key=lambda x: x["year"], reverse=True)
 
             selected_movie = None
             for res in search_results:
-                if get_similarity(title, res["title"]) >= 90:
+                sim = get_similarity(title, res["title"])
+                if sim >= 90:
                     selected_movie = res
                     break
-            if not selected_movie: return None
+
+            if not selected_movie:
+                print(f"[fzmovies] No match above 90% threshold")
+                return None
+
+            print(f"[fzmovies] Selected: {selected_movie['title']}")
 
             # STEP 2: Get Quality Links
             movie_url = f"{BASE_URL}/{selected_movie['url'].lstrip('/')}"
-            resp = await session.get(movie_url, headers=headers)
-            if resp.status_code != 200: return None
+            resp = await session.get(movie_url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                print(f"[fzmovies] Movie page failed: {resp.status_code}")
+                return None
 
             qualities = []
             seen_urls = set()
-            # Find all download1.php links
             for match in re.finditer(r'href=[\"\'](.*?download1\.php[^\"\']*)[\"\']|onclick=[\"\'](.*?download1\.php[^\"\']*)[\"\']', resp.text, re.IGNORECASE):
                 url = match.group(1) or match.group(2)
                 if not url or url in seen_urls: continue
@@ -87,7 +99,6 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
                 if not url.startswith("http"):
                     url = f"{BASE_URL}/{url.lstrip('/')}"
 
-                # Try to find the .mp4/.mkv text and size near the link
                 block = resp.text[max(0, match.start()-200):match.end()+100]
                 text_match = re.search(r'([\w\.\s\-]+\.(?:mp4|mkv))', block, re.IGNORECASE)
                 size_match = re.search(r'\(\s*(\d+(?:\.\d+)?)\s*(MB|GB)\s*\)', block, re.IGNORECASE)
@@ -98,14 +109,15 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
                     "size": f"{size_match.group(1)} {size_match.group(2).upper()}" if size_match else "Unknown"
                 })
 
+            print(f"[fzmovies] Found {len(qualities)} quality links")
+
             # STEP 3: Get Final dlink.php URLs
             final_results = []
             for quality in qualities:
                 try:
-                    resp = await session.get(quality["url"], headers=headers, allow_redirects=True)
+                    resp = await session.get(quality["url"], headers=headers, allow_redirects=True, timeout=15)
                     if resp.status_code != 200: continue
 
-                    # Look for the final dlink.php link
                     dlinks = re.findall(r'href=[\"\'](dlink\.php\?[^\"\']+)[\"\']', resp.text, re.IGNORECASE)
                     if dlinks:
                         final_results.append({
@@ -116,9 +128,11 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
                 except Exception:
                     continue
 
-            if not final_results: return None
+            if not final_results:
+                print(f"[fzmovies] No dlink URLs found")
+                return None
 
-            # STEP 4: Quality Selection Logic (Exact same as before)
+            # STEP 4: Quality Selection
             def get_q_score(file_name):
                 fn = file_name.lower()
                 if "2160p" in fn or "4k" in fn: return 0
@@ -154,6 +168,7 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
             if not selected or not selected.get('downloads'):
                 return None
 
+            print(f"[fzmovies] SUCCESS: {selected['file']} ({selected['size']})")
             return {
                 "stream": selected['downloads'][0],
                 "quality": actual_quality,
