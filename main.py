@@ -1,4 +1,4 @@
-rom fastapi import FastAPI, HTTPException
+﻿from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -83,3 +83,4 @@ async def subs(url: str):
         raise HTTPException(status_code=500, detail="Could not parse subtitle")
     except HTTPException: raise
     except Exception: raise HTTPException(status_code=500, detail="Error fetching subtitle")
+
