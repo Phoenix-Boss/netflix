@@ -1,4 +1,4 @@
-﻿﻿import os
+﻿import os
 mport re, json, time, asyncio
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
