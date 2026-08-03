@@ -1,5 +1,5 @@
-mport os
-mport re,json
+import os
+import re,json
 from typing import Optional,Dict,List
 from curl_cffi import requests as curl_requests
 

@@ -1,5 +1,5 @@
-mport os
-rom curl_cffi.requests import AsyncSession
+import os
+from curl_cffi.requests import AsyncSession
 from urllib.parse import quote
 
 _SBDL_KEY = "subdl_qFxEpBh6BuFCLpPB0YxC1YS0s0VBstg1Te7obtj4jmY"

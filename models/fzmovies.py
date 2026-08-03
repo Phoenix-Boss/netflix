@@ -1,5 +1,5 @@
-mport os
-mport re
+import os
+import re
 import asyncio
 from urllib.parse import quote_plus
 from curl_cffi.requests import AsyncSession
