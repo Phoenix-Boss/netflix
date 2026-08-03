@@ -12,3 +12,4 @@ dump*.py
 debug*.py
 inspect*.py
 analyze_api.py
+.env
