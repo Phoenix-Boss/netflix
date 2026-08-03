@@ -1,4 +1,4 @@
-import sys
+mport sys
 import ddddocr
 
 # Initialize the OCR engine (show_ad=False removes the startup banner)

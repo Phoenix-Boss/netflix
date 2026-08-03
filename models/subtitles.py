@@ -1,4 +1,4 @@
-﻿import os
+mport os
 rom curl_cffi.requests import AsyncSession
 from urllib.parse import quote
 

@@ -1,4 +1,4 @@
-﻿import os
+mport os
 mport re,json
 from typing import Optional,Dict,List
 from curl_cffi import requests as curl_requests

@@ -1,4 +1,4 @@
-import time
+mport time
 
 CACHE_TTL = 3600
 _cache = {}

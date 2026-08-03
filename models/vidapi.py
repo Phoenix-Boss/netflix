@@ -1,5 +1,5 @@
-﻿import os
-mport re, json, time, asyncio
+import os
+import re, json, time, asyncio
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from .utils import fetch_session, is_stream_alive
@@ -9,7 +9,6 @@ from .cache import get as cache_get, set as cache_set
 VIDSRC_DOMAINS = ["vidsrc.pm", "vidsrc.rip", "vidsrc.cc", "vidsrc.lol", "vidsrc.top", "vidsrc.dev"]
 FALLBACK_DOMAINS = ["vidsrc.link", "vidsrc.in", "vidsrc.tw", "vidapi.xyz"]
 
-# Hard limits per request
 TIMEOUT = 12 
 
 async def extract(dbid, s=None, e=None, retry=True):
@@ -39,7 +38,6 @@ async def _do_extract(dbid, media_type, s, e):
                 else:
                     embed_url = f"https://{domain}/embed/movie/{dbid}"
                 
-                # Wrap in wait_for to GUARANTEE it doesn't hang past TIMEOUT
                 resp1 = await asyncio.wait_for(
                     fetch_session(embed_url, session, headers={"Referer": f"https://{domain}/"}),
                     timeout=TIMEOUT
@@ -101,7 +99,7 @@ async def _do_extract(dbid, media_type, s, e):
                     continue
                 
                 valid_streams = []
-                for url in stream_urls[:5]:  # Check max 5 streams
+                for url in stream_urls[:5]:
                     if await is_stream_alive(url, timeout=3):
                         valid_streams.append(url)
                 

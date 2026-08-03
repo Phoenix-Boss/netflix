@@ -1,4 +1,4 @@
-﻿import os
+mport os
 mport re, base64
 from typing import Optional, Dict, List
 from curl_cffi import requests as curl_requests
