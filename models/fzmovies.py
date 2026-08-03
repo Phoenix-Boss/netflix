@@ -3,6 +3,7 @@ import re
 import asyncio
 from urllib.parse import quote_plus
 from curl_cffi.requests import AsyncSession
+from bs4 import BeautifulSoup
 
 BASE_URL = "https://fzmovies.live"
 
@@ -46,26 +47,42 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
             print(f"[fzmovies] Searching: {search_url}")
             resp = await session.get(search_url, headers=headers, timeout=15)
             print(f"[fzmovies] Search status: {resp.status_code} | Length: {len(resp.text)}")
+            
             if resp.status_code != 200:
                 print(f"[fzmovies] Search failed with status {resp.status_code}")
                 return None
 
             html = resp.text
             search_results = []
-            for match in re.finditer(r'href=\"(movie-[^"]+\.htm)\"[^>]*>([\s\S]*?)<\/a>', html, re.IGNORECASE):
-                raw_text = re.sub(r'<[^>]*>', '', match.group(2)).replace('\s', ' ').strip()
-                if len(raw_text) > 3:
-                    ym = re.search(r'\((\d{4})\)', raw_text)
-                    search_results.append({
-                        "url": match.group(1),
-                        "title": raw_text,
-                        "year": int(ym.group(1)) if ym else 0
-                    })
+            
+            soup = BeautifulSoup(html, "html.parser")
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if re.search(r'movie-.*\.htm', href, re.IGNORECASE):
+                    text = a.get_text(" ", strip=True)
+                    if len(text) > 5 and "fzmovies" not in text.lower():
+                        ym = re.search(r'\((\d{4})\)', text)
+                        search_results.append({
+                            "url": href,
+                            "title": text,
+                            "year": int(ym.group(1)) if ym else 0
+                        })
 
             print(f"[fzmovies] Found {len(search_results)} results")
             for r in search_results[:5]:
                 sim = get_similarity(title, r["title"])
                 print(f"[fzmovies]   '{r['title']}' (year={r['year']}, sim={sim:.1f}%)")
+
+            if not search_results:
+                first_word = title.split()[0]
+                idx = html.lower().find(first_word.lower())
+                if idx != -1:
+                    snippet = html[max(0, idx - 200):idx + 500]
+                    snippet = re.sub(r'\s+', ' ', snippet).strip()
+                    print(f"[fzmovies] HTML SNIPPET AROUND '{first_word}': {snippet[:800]}")
+                else:
+                    print(f"[fzmovies] Could not find '{first_word}' in HTML. First 800 chars: {html[:800]}")
+                return None
 
             search_results.sort(key=lambda x: x["year"], reverse=True)
 
@@ -82,32 +99,34 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
 
             print(f"[fzmovies] Selected: {selected_movie['title']}")
 
-            # STEP 2: Get Quality Links
+            # STEP 2: Get Quality Links (increased timeout for heavy pages)
             movie_url = f"{BASE_URL}/{selected_movie['url'].lstrip('/')}"
-            resp = await session.get(movie_url, headers=headers, timeout=15)
+            print(f"[fzmovies] Fetching movie page: {movie_url}")
+            resp = await session.get(movie_url, headers=headers, timeout=30)
             if resp.status_code != 200:
                 print(f"[fzmovies] Movie page failed: {resp.status_code}")
                 return None
 
             qualities = []
             seen_urls = set()
-            for match in re.finditer(r'href=[\"\'](.*?download1\.php[^\"\']*)[\"\']|onclick=[\"\'](.*?download1\.php[^\"\']*)[\"\']', resp.text, re.IGNORECASE):
-                url = match.group(1) or match.group(2)
-                if not url or url in seen_urls: continue
-                seen_urls.add(url)
+            
+            movie_soup = BeautifulSoup(resp.text, "html.parser")
+            for a in movie_soup.find_all("a", href=True):
+                href = a["href"]
+                if "download1.php" in href and href not in seen_urls:
+                    seen_urls.add(href)
+                    if not href.startswith("http"):
+                        href = f"{BASE_URL}/{href.lstrip('/')}"
 
-                if not url.startswith("http"):
-                    url = f"{BASE_URL}/{url.lstrip('/')}"
+                    parent_text = a.parent.get_text(" ", strip=True) if a.parent else ""
+                    text_match = re.search(r'([\w\.\s\-]+\.(?:mp4|mkv))', parent_text, re.IGNORECASE)
+                    size_match = re.search(r'\(\s*(\d+(?:\.\d+)?)\s*(MB|GB)\s*\)', parent_text, re.IGNORECASE)
 
-                block = resp.text[max(0, match.start()-200):match.end()+100]
-                text_match = re.search(r'([\w\.\s\-]+\.(?:mp4|mkv))', block, re.IGNORECASE)
-                size_match = re.search(r'\(\s*(\d+(?:\.\d+)?)\s*(MB|GB)\s*\)', block, re.IGNORECASE)
-
-                qualities.append({
-                    "url": url,
-                    "text": text_match.group(1).strip() if text_match else "Unknown.mp4",
-                    "size": f"{size_match.group(1)} {size_match.group(2).upper()}" if size_match else "Unknown"
-                })
+                    qualities.append({
+                        "url": href,
+                        "text": text_match.group(1).strip() if text_match else "Unknown.mp4",
+                        "size": f"{size_match.group(1)} {size_match.group(2).upper()}" if size_match else "Unknown"
+                    })
 
             print(f"[fzmovies] Found {len(qualities)} quality links")
 
@@ -115,17 +134,32 @@ async def get_fallback_stream(title: str, requested_quality: str = None):
             final_results = []
             for quality in qualities:
                 try:
-                    resp = await session.get(quality["url"], headers=headers, allow_redirects=True, timeout=15)
+                    resp = await session.get(quality["url"], headers=headers, allow_redirects=True, timeout=30)
                     if resp.status_code != 200: continue
 
-                    dlinks = re.findall(r'href=[\"\'](dlink\.php\?[^\"\']+)[\"\']', resp.text, re.IGNORECASE)
+                    # Use BeautifulSoup to find dlink
+                    dl_soup = BeautifulSoup(resp.text, "html.parser")
+                    dlinks = []
+                    for a in dl_soup.find_all("a", href=True):
+                        if "dlink" in a["href"]:
+                            dlinks.append(a["href"])
+                    
+                    # Fallback regex just in case
+                    if not dlinks:
+                        dlinks = re.findall(r'href=[\"\'](dlink\.php\?[^\"\']+)[\"\']', resp.text, re.IGNORECASE)
+
                     if dlinks:
                         final_results.append({
                             "file": quality["text"],
                             "size": quality["size"],
                             "downloads": [f"{BASE_URL}/{dl.lstrip('/')}" if not dl.startswith('http') else dl for dl in dlinks]
                         })
-                except Exception:
+                    else:
+                        # DEBUG: What is on this page now?
+                        snippet = re.sub(r'\s+', ' ', resp.text[:600]).strip()
+                        print(f"[fzmovies] No dlink found. Page snippet: {snippet}")
+                except Exception as e:
+                    print(f"[fzmovies] Error getting dlink: {e}")
                     continue
 
             if not final_results:
