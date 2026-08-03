@@ -17,7 +17,7 @@ class ExtractItem(BaseModel):
     season: Optional[int] = None
     episode: Optional[int] = None
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def index(): return await info()
 
 @app.get("/stream/{dbid}")
@@ -83,4 +83,5 @@ async def subs(url: str):
         raise HTTPException(status_code=500, detail="Could not parse subtitle")
     except HTTPException: raise
     except Exception: raise HTTPException(status_code=500, detail="Error fetching subtitle")
+
 
