@@ -9,11 +9,9 @@ from .cache import get as cache_get, set as cache_set
 VIDSRC_DOMAINS = ["vidsrc.pm", "vidsrc.rip", "vidsrc.cc", "vidsrc.lol", "vidsrc.top", "vidsrc.dev"]
 FALLBACK_DOMAINS = ["vidsrc.link", "vidsrc.in", "vidsrc.tw", "vidapi.xyz"]
 
-TIMEOUT = 12
-
+TIMEOUT = 10
 
 def _get_proxy():
-    """Get proxy URL from environment. Render uses HTTPS_PROXY/HTTP_PROXY."""
     return (
         os.environ.get("HTTPS_PROXY") or
         os.environ.get("HTTP_PROXY") or
@@ -22,7 +20,6 @@ def _get_proxy():
         os.getenv("PROXY_URL") or
         None
     )
-
 
 async def extract(dbid, s=None, e=None, retry=True):
     media_type = "tv" if s is not None and e is not None else "movie"
@@ -40,102 +37,106 @@ async def extract(dbid, s=None, e=None, retry=True):
         cache_set(cache_key, result)
     return result
 
+async def _try_domain(domain, dbid, media_type, s, e, session):
+    """Try a single domain. Returns result or None."""
+    try:
+        if media_type == "tv":
+            embed_url = f"https://{domain}/embed/tv/{dbid}/{s}/{e}"
+        else:
+            embed_url = f"https://{domain}/embed/movie/{dbid}"
+
+        resp1 = await asyncio.wait_for(
+            fetch_session(embed_url, session, headers={"Referer": f"https://{domain}/"}),
+            timeout=TIMEOUT
+        )
+        if not resp1 or resp1.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp1.text, "html.parser")
+        iframe = soup.find("iframe")
+        if not iframe:
+            return None
+
+        player_url = iframe.get("src", "")
+        if player_url.startswith("//"):
+            player_url = "https:" + player_url
+        if not player_url.startswith("http"):
+            return None
+
+        resp2 = await asyncio.wait_for(
+            fetch_session(player_url, session, headers={"Referer": embed_url}),
+            timeout=TIMEOUT
+        )
+        if not resp2 or resp2.status_code != 200:
+            return None
+
+        match = re.search(r"const CONFIG = ({.*?});", resp2.text, re.S)
+        if not match:
+            return None
+
+        config = json.loads(match.group(1))
+        media_id = config.get("MediaId", config.get("mediaId", dbid))
+        id_type = config.get("idType", "tmdb")
+        stream_api = config.get("streamDataApiUrl", "https://streamdata.vaplayer.ru/api.php")
+        api_url = f"{stream_api}?{id_type}={quote(str(media_id))}&type={media_type}"
+        if media_type == "tv":
+            api_url += f"&season={s}&episode={e}"
+
+        resp3 = await asyncio.wait_for(
+            fetch_session(api_url, session, headers={"Referer": player_url, "Origin": "https://nextgencloudfabric.com", "Accept": "application/json"}),
+            timeout=TIMEOUT
+        )
+        if not resp3 or resp3.status_code != 200:
+            return None
+
+        data = resp3.json()
+        if str(data.get("status_code")) != "200" or not data.get("data"):
+            return None
+
+        d = data["data"]
+        stream_urls = d.get("stream_urls", [])
+        if not stream_urls:
+            return None
+
+        valid_streams = []
+        for url in stream_urls[:5]:
+            if await is_stream_alive(url, timeout=3):
+                valid_streams.append(url)
+
+        if not valid_streams:
+            return None
+
+        print(f"[vidapi] SUCCESS ({domain}): {len(valid_streams)} streams")
+        return {
+            "stream_urls": valid_streams,
+            "imdb_id": d.get("imdb_id", ""),
+            "title": d.get("title", ""),
+            "file_name": d.get("file_name", ""),
+            "backdrop": data.get("thumbnails_url", "")
+        }
+
+    except asyncio.TimeoutError:
+        return None
+    except Exception as ex:
+        print(f"[vidapi] {domain} err: {ex}")
+        return None
+
 
 async def _do_extract(dbid, media_type, s, e):
     all_domains = VIDSRC_DOMAINS + FALLBACK_DOMAINS
 
     async with AsyncSession(impersonate="chrome", verify=False, proxy=_get_proxy()) as session:
-        for domain in all_domains:
-            try:
-                if media_type == "tv":
-                    embed_url = f"https://{domain}/embed/tv/{dbid}/{s}/{e}"
-                else:
-                    embed_url = f"https://{domain}/embed/movie/{dbid}"
-
-                resp1 = await asyncio.wait_for(
-                    fetch_session(embed_url, session, headers={"Referer": f"https://{domain}/"}),
-                    timeout=TIMEOUT
-                )
-                if not resp1 or resp1.status_code != 200:
-                    print(f"[vidapi] {domain}: embed {resp1.status_code if resp1 else 'fail'}")
-                    continue
-
-                soup = BeautifulSoup(resp1.text, "html.parser")
-                iframe = soup.find("iframe")
-                if not iframe:
-                    print(f"[vidapi] {domain}: no iframe")
-                    continue
-
-                player_url = iframe.get("src", "")
-                if player_url.startswith("//"):
-                    player_url = "https:" + player_url
-                if not player_url.startswith("http"):
-                    continue
-
-                resp2 = await asyncio.wait_for(
-                    fetch_session(player_url, session, headers={"Referer": embed_url}),
-                    timeout=TIMEOUT
-                )
-                if not resp2 or resp2.status_code != 200:
-                    print(f"[vidapi] {domain}: player {resp2.status_code if resp2 else 'fail'}")
-                    continue
-
-                match = re.search(r"const CONFIG = ({.*?});", resp2.text, re.S)
-                if not match:
-                    print(f"[vidapi] {domain}: no CONFIG")
-                    continue
-
-                config = json.loads(match.group(1))
-                media_id = config.get("MediaId", config.get("mediaId", dbid))
-                id_type = config.get("idType", "tmdb")
-                stream_api = config.get("streamDataApiUrl", "https://streamdata.vaplayer.ru/api.php")
-                api_url = f"{stream_api}?{id_type}={quote(str(media_id))}&type={media_type}"
-                if media_type == "tv":
-                    api_url += f"&season={s}&episode={e}"
-
-                resp3 = await asyncio.wait_for(
-                    fetch_session(api_url, session, headers={"Referer": player_url, "Origin": "https://nextgencloudfabric.com", "Accept": "application/json"}),
-                    timeout=TIMEOUT
-                )
-                if not resp3 or resp3.status_code != 200:
-                    print(f"[vidapi] {domain}: API {resp3.status_code if resp3 else 'fail'}")
-                    continue
-
-                data = resp3.json()
-                if str(data.get("status_code")) != "200" or not data.get("data"):
-                    print(f"[vidapi] {domain}: API {data.get('status_code')}")
-                    continue
-
-                d = data["data"]
-                stream_urls = d.get("stream_urls", [])
-                if not stream_urls:
-                    print(f"[vidapi] {domain}: no stream_urls")
-                    continue
-
-                valid_streams = []
-                for url in stream_urls[:5]:
-                    if await is_stream_alive(url, timeout=3):
-                        valid_streams.append(url)
-
-                if not valid_streams:
-                    print(f"[vidapi] {domain}: all streams dead")
-                    continue
-
-                print(f"[vidapi] SUCCESS ({domain}): {len(valid_streams)} streams")
-                return {
-                    "stream_urls": valid_streams,
-                    "imdb_id": d.get("imdb_id", ""),
-                    "title": d.get("title", ""),
-                    "file_name": d.get("file_name", ""),
-                    "backdrop": data.get("thumbnails_url", "")
-                }
-
-            except asyncio.TimeoutError:
-                print(f"[vidapi] {domain}: TIMEOUT ({TIMEOUT}s)")
-                continue
-            except Exception as ex:
-                print(f"[vidapi] {domain} err: {ex}")
-                continue
+        # Hit ALL domains in parallel instead of one-by-one
+        tasks = [
+            _try_domain(domain, dbid, media_type, s, e, session)
+            for domain in all_domains
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # First valid result wins
+        for result in results:
+            if isinstance(result, dict) and result:
+                return result
         return None
 
 
