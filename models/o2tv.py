@@ -1,4 +1,4 @@
-import os
+﻿import os
 import asyncio
 import re
 import io
@@ -17,16 +17,30 @@ if tesseract_path:
 BASE_DIR = Path(__file__).resolve().parent.parent
 PYTHON_EXECUTABLE = sys.executable
 
+
+def _get_proxy():
+    """Get proxy URL from environment. Render uses HTTPS_PROXY/HTTP_PROXY."""
+    return (
+        os.environ.get("HTTPS_PROXY") or
+        os.environ.get("HTTP_PROXY") or
+        os.environ.get("https_proxy") or
+        os.environ.get("http_proxy") or
+        os.getenv("PROXY_URL") or
+        None
+    )
+
+
 def preprocess_captcha(img_bytes):
     img = Image.open(io.BytesIO(img_bytes))
     img = img.convert('L')
     img = img.point(lambda p: 255 if p > 120 else 0, 'L')
     return img
 
+
 async def extract(title: str, season: int, episode: int):
     slug = title.replace(" ", "-")
     base_url = "https://o2tvseries4u.com"
-    async with AsyncSession(impersonate="chrome", verify=False, proxy=os.getenv("PROXY_URL")) as session:
+    async with AsyncSession(impersonate="chrome", verify=False, proxy=_get_proxy()) as session:
         resp = await session.get(f"{base_url}/{slug}/index.html")
         if resp.status_code != 200 or slug not in resp.url: return None
         resp = await session.get(f"{base_url}/{slug}/Season-{season:02d}/index.html")
@@ -41,7 +55,7 @@ async def extract(title: str, season: int, episode: int):
         download_id_url = dl_match.group(1)
         if download_id_url.startswith("/"): download_id_url = base_url + download_id_url
         resp = await session.get(download_id_url, allow_redirects=True)
-        captcha_url = resp.url 
+        captcha_url = resp.url
         if "areyouhuman.php" not in captcha_url: return None
         for attempt in range(1, 5):
             resp = await session.get(captcha_url)
@@ -59,6 +73,7 @@ async def extract(title: str, season: int, episode: int):
                 if video_url and (".mp4" in video_url or ".mkv" in video_url): return video_url
             await asyncio.sleep(0.5)
         return None
+
 
 def format_source(result: dict, subs=None, needs_transcode: bool = False):
     if not result or not result.get("download_url"): return []

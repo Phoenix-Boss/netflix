@@ -5,12 +5,25 @@ from curl_cffi import requests as curl_requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
+
+def _get_proxy():
+    """Get proxy URL from environment. Render uses HTTPS_PROXY/HTTP_PROXY."""
+    return (
+        os.environ.get("HTTPS_PROXY") or
+        os.environ.get("HTTP_PROXY") or
+        os.environ.get("https_proxy") or
+        os.environ.get("http_proxy") or
+        os.getenv("PROXY_URL") or
+        None
+    )
+
+
 class KissAsianExtractor:
     BASE_URL = "https://kissasian.tf"
     PLAYER_URL = "https://player.dramavideo.se"
 
     def __init__(self):
-        self.session = curl_requests.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL"))
+        self.session = curl_requests.Session(impersonate="chrome131", proxy=_get_proxy())
         self.session.timeout = 20
 
     def search(self, title: str) -> List[Dict]:

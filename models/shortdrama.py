@@ -3,6 +3,19 @@ import re,json
 from typing import Optional,Dict,List
 from curl_cffi import requests as curl_requests
 
+
+def _get_proxy():
+    """Get proxy URL from environment. Render uses HTTPS_PROXY/HTTP_PROXY."""
+    return (
+        os.environ.get("HTTPS_PROXY") or
+        os.environ.get("HTTP_PROXY") or
+        os.environ.get("https_proxy") or
+        os.environ.get("http_proxy") or
+        os.getenv("PROXY_URL") or
+        None
+    )
+
+
 class ShortDramaExtractor:
     SITES = {
         "reelshort": "https://reelshort.com",
@@ -10,7 +23,7 @@ class ShortDramaExtractor:
     }
     
     def __init__(self):
-        self.session = curl_requests.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL"))
+        self.session = curl_requests.Session(impersonate="chrome131", proxy=_get_proxy())
         self.session.timeout = 20
     
     def search(self, title: str, site: str = "reelshort") -> List[Dict]:

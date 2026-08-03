@@ -9,13 +9,26 @@ from urllib.parse import urlparse, urljoin, parse_qs
 
 _CACHED_MIRROR = None
 
+
+def _get_proxy():
+    """Get proxy URL from environment. Render uses HTTPS_PROXY/HTTP_PROXY."""
+    return (
+        os.environ.get("HTTPS_PROXY") or
+        os.environ.get("HTTP_PROXY") or
+        os.environ.get("https_proxy") or
+        os.environ.get("http_proxy") or
+        os.getenv("PROXY_URL") or
+        None
+    )
+
+
 class DramacoolExtractor:
     KNOWN = ["https://asianc.online", "https://asianc.tv", "https://asianc.to"]
     FALLBACK = "https://asianc.online"
 
     def __init__(self):
         global _CACHED_MIRROR
-        self.s = cr.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL"))
+        self.s = cr.Session(impersonate="chrome131", proxy=_get_proxy())
         self.s.timeout = 20
         if _CACHED_MIRROR:
             self.B = _CACHED_MIRROR
@@ -25,7 +38,7 @@ class DramacoolExtractor:
 
     def _ok(self, url):
         try:
-            r = cr.Session(impersonate="chrome131", proxy=os.getenv("PROXY_URL")).get(url, timeout=8)
+            r = cr.Session(impersonate="chrome131", proxy=_get_proxy()).get(url, timeout=8)
             return r.status_code == 200 and "Just a moment" not in r.text and "drama-detail" in r.text
         except:
             return False
