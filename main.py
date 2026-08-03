@@ -3,12 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import gzip
+import os
 from models import info, extract, format_sources, extract_quality, get_subtitles, fetch
 from models.cache import stats as cache_stats, clear as cache_clear, clear_category as cache_clear_category
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 
-app = FastAPI(title="Streaming API", version="13.0.0")
+app = FastAPI(title="Streaming API", version="13.0.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class ExtractItem(BaseModel):
@@ -63,7 +64,18 @@ async def tv_smart(dbid: str, s: int = None, e: int = None, q: str = "1080p"):
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "13.0.0", "providers": ["vidapi", "fzmovies (Pure Python)", "o2tv"]}
+    return {"status": "healthy", "version": "13.0.1", "providers": ["vidapi", "fzmovies (Pure Python)", "o2tv"]}
+
+@app.get("/debug")
+async def debug():
+    return {
+        "HTTPS_PROXY": os.environ.get("HTTPS_PROXY", "NOT SET"),
+        "HTTP_PROXY": os.environ.get("HTTP_PROXY", "NOT SET"),
+        "https_proxy": os.environ.get("https_proxy", "NOT SET"),
+        "http_proxy": os.environ.get("http_proxy", "NOT SET"),
+        "PROXY_URL": os.environ.get("PROXY_URL", "NOT SET"),
+        "ALL_PROXY": os.environ.get("ALL_PROXY", "NOT SET"),
+    }
 
 @app.get("/subs")
 async def subs(url: str):
@@ -83,5 +95,3 @@ async def subs(url: str):
         raise HTTPException(status_code=500, detail="Could not parse subtitle")
     except HTTPException: raise
     except Exception: raise HTTPException(status_code=500, detail="Error fetching subtitle")
-
-
