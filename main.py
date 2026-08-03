@@ -2,15 +2,11 @@
 
 # ============================================================
 # CRITICAL: Fix Render's empty proxy vars breaking curl_cffi.
-# Render sets HTTPS_PROXY="" which forces libcurl to bypass
-# our explicit proxy kwarg, causing 407 errors.
-# Must run BEFORE importing models (which load curl_cffi).
 # ============================================================
 for var in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]:
     if not os.environ.get(var):
         os.environ.pop(var, None)
 
-# Fix trailing slash in PROXY_URL (breaks some proxy parsers)
 proxy_url = os.environ.get("PROXY_URL")
 if proxy_url and proxy_url.endswith("/"):
     os.environ["PROXY_URL"] = proxy_url.rstrip("/")
@@ -20,12 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import gzip
-from models import info, extract, format_sources, extract_quality, get_subtitles, fetch
+from models import info, extract, format_sources, extract_quality, get_subtitles, fetch, VERSION
 from models.cache import stats as cache_stats, clear as cache_clear, clear_category as cache_clear_category
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 
-app = FastAPI(title="Streaming API", version="13.0.2")
+app = FastAPI(title="Streaming API", version=VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class ExtractItem(BaseModel):
@@ -80,15 +76,40 @@ async def tv_smart(dbid: str, s: int = None, e: int = None, q: str = "1080p"):
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "13.0.2", "providers": ["vidapi", "fzmovies (Pure Python)", "o2tv"]}
+    return {"status": "healthy", "version": VERSION, "providers": ["vidapi", "fzmovies (Pure Python)", "o2tv"]}
 
-@app.get("/debug")
-async def debug():
-    return {
-        "HTTPS_PROXY": os.environ.get("HTTPS_PROXY", "NOT SET"),
-        "HTTP_PROXY": os.environ.get("HTTP_PROXY", "NOT SET"),
-        "PROXY_URL": os.environ.get("PROXY_URL", "NOT SET"),
-    }
+@app.get("/test-proxy")
+async def test_proxy():
+    """Direct test: can curl_cffi actually use the Webshare proxy?"""
+    from curl_cffi.requests import AsyncSession
+    proxy = os.environ.get("PROXY_URL")
+    results = {}
+
+    # Test 1: HTTP (no CONNECT tunnel needed)
+    try:
+        async with AsyncSession(proxy=proxy) as session:
+            r = await session.get("http://httpbin.org/ip", timeout=10)
+            results["http"] = {"status": r.status_code, "body": r.text[:200]}
+    except Exception as e:
+        results["http"] = {"error": str(e)}
+
+    # Test 2: HTTPS (needs CONNECT tunnel — this is where 407 happens)
+    try:
+        async with AsyncSession(proxy=proxy) as session:
+            r = await session.get("https://httpbin.org/ip", timeout=10)
+            results["https"] = {"status": r.status_code, "body": r.text[:200]}
+    except Exception as e:
+        results["https"] = {"error": str(e)}
+
+    # Test 3: HTTPS with impersonate (what vidapi uses)
+    try:
+        async with AsyncSession(impersonate="chrome", proxy=proxy) as session:
+            r = await session.get("https://httpbin.org/ip", timeout=10)
+            results["https_impersonate"] = {"status": r.status_code, "body": r.text[:200]}
+    except Exception as e:
+        results["https_impersonate"] = {"error": str(e)}
+
+    return {"proxy": proxy, "tests": results}
 
 @app.get("/subs")
 async def subs(url: str):
