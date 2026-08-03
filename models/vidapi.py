@@ -9,7 +9,15 @@ from .cache import get as cache_get, set as cache_set
 VIDSRC_DOMAINS = ["vidsrc.pm", "vidsrc.rip", "vidsrc.cc", "vidsrc.lol", "vidsrc.top", "vidsrc.dev"]
 FALLBACK_DOMAINS = ["vidsrc.link", "vidsrc.in", "vidsrc.tw", "vidapi.xyz"]
 
-TIMEOUT = 10
+TIMEOUT = 8
+
+# ============================================================
+# Request Coalescing: prevents duplicate fetches for same ID.
+# If 100 users request the same movie at once, only ONE fetch
+# happens. The other 99 wait and get the cached result.
+# ============================================================
+_pending = {}  # cache_key -> asyncio.Future
+
 
 def _get_proxy():
     return (
@@ -21,21 +29,55 @@ def _get_proxy():
         None
     )
 
+
 async def extract(dbid, s=None, e=None, retry=True):
     media_type = "tv" if s is not None and e is not None else "movie"
     cache_key = f"stream:{media_type}:{dbid}:{s}:{e}"
+
+    # 1. Cache hit? Return instantly (zero CPU)
     cached = cache_get(cache_key)
     if cached:
         print(f"[vidapi] CACHE HIT: {dbid}")
         return cached
-    result = await _do_extract(dbid, media_type, s, e)
-    if result is None and retry:
-        print(f"[vidapi] RETRY: {dbid}")
-        await asyncio.sleep(1)
+
+    # 2. Someone already fetching this? Wait for their result (zero CPU)
+    if cache_key in _pending:
+        print(f"[vidapi] COALESCE: {dbid} (waiting for existing fetch)")
+        try:
+            return await _pending[cache_key]
+        except Exception:
+            return None
+
+    # 3. We're the first. Create a future, do the work, share the result.
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    _pending[cache_key] = future
+
+    try:
         result = await _do_extract(dbid, media_type, s, e)
-    if result:
-        cache_set(cache_key, result)
-    return result
+        if result is None and retry:
+            print(f"[vidapi] RETRY: {dbid}")
+            await asyncio.sleep(1)
+            result = await _do_extract(dbid, media_type, s, e)
+
+        if result:
+            cache_set(cache_key, result)
+
+        # Share the result with anyone waiting
+        if not future.done():
+            future.set_result(result)
+        return result
+
+    except Exception as ex:
+        print(f"[vidapi] FATAL: {dbid} - {ex}")
+        if not future.done():
+            future.set_result(None)
+        return None
+
+    finally:
+        # Always clean up so the next request starts fresh
+        _pending.pop(cache_key, None)
+
 
 async def _try_domain(domain, dbid, media_type, s, e, session):
     """Try a single domain. Returns result or None."""
@@ -99,12 +141,13 @@ async def _try_domain(domain, dbid, media_type, s, e, session):
             return None
 
         valid_streams = []
-        for url in stream_urls[:5]:
+        for url in stream_urls[:2]:
             if await is_stream_alive(url, timeout=3):
                 valid_streams.append(url)
+                break
 
         if not valid_streams:
-            return None
+            valid_streams = stream_urls[:1]
 
         print(f"[vidapi] SUCCESS ({domain}): {len(valid_streams)} streams")
         return {
@@ -126,17 +169,19 @@ async def _do_extract(dbid, media_type, s, e):
     all_domains = VIDSRC_DOMAINS + FALLBACK_DOMAINS
 
     async with AsyncSession(impersonate="chrome", verify=False, proxy=_get_proxy()) as session:
-        # Hit ALL domains in parallel instead of one-by-one
-        tasks = [
-            _try_domain(domain, dbid, media_type, s, e, session)
-            for domain in all_domains
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # First valid result wins
-        for result in results:
-            if isinstance(result, dict) and result:
-                return result
+        pending = {
+            asyncio.create_task(_try_domain(d, dbid, media_type, s, e, session))
+            for d in all_domains
+        }
+
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                result = task.exception() if task.exception() else task.result()
+                if isinstance(result, dict) and result:
+                    for p in pending:
+                        p.cancel()
+                    return result
         return None
 
 
