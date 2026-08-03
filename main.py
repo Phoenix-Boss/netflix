@@ -1,15 +1,13 @@
 ﻿import os
 
 # ============================================================
-# CRITICAL: Fix Render's empty proxy vars breaking curl_cffi.
+# NUCLEAR OPTION: Kill ALL proxy variables on startup.
+# Render paid tier has direct internet access — no proxy needed.
+# This removes them regardless of where they come from
+# (Dockerfile, Environment tab, Secrets tab, etc.)
 # ============================================================
-for var in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]:
-    if not os.environ.get(var):
-        os.environ.pop(var, None)
-
-proxy_url = os.environ.get("PROXY_URL")
-if proxy_url and proxy_url.endswith("/"):
-    os.environ["PROXY_URL"] = proxy_url.rstrip("/")
+for var in ["PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY"]:
+    os.environ.pop(var, None)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -80,36 +78,16 @@ async def health():
 
 @app.get("/test-proxy")
 async def test_proxy():
-    """Direct test: can curl_cffi actually use the Webshare proxy?"""
+    """Direct test: outbound connection without proxy."""
     from curl_cffi.requests import AsyncSession
-    proxy = os.environ.get("PROXY_URL")
     results = {}
-
-    # Test 1: HTTP (no CONNECT tunnel needed)
     try:
-        async with AsyncSession(proxy=proxy) as session:
-            r = await session.get("http://httpbin.org/ip", timeout=10)
-            results["http"] = {"status": r.status_code, "body": r.text[:200]}
-    except Exception as e:
-        results["http"] = {"error": str(e)}
-
-    # Test 2: HTTPS (needs CONNECT tunnel — this is where 407 happens)
-    try:
-        async with AsyncSession(proxy=proxy) as session:
+        async with AsyncSession() as session:
             r = await session.get("https://httpbin.org/ip", timeout=10)
-            results["https"] = {"status": r.status_code, "body": r.text[:200]}
+            results["direct_https"] = {"status": r.status_code, "body": r.text[:200]}
     except Exception as e:
-        results["https"] = {"error": str(e)}
-
-    # Test 3: HTTPS with impersonate (what vidapi uses)
-    try:
-        async with AsyncSession(impersonate="chrome", proxy=proxy) as session:
-            r = await session.get("https://httpbin.org/ip", timeout=10)
-            results["https_impersonate"] = {"status": r.status_code, "body": r.text[:200]}
-    except Exception as e:
-        results["https_impersonate"] = {"error": str(e)}
-
-    return {"proxy": proxy, "tests": results}
+        results["direct_https"] = {"error": str(e)}
+    return {"proxy_used": os.environ.get("PROXY_URL", "NONE"), "tests": results}
 
 @app.get("/subs")
 async def subs(url: str):
