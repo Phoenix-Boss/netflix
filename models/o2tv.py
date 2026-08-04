@@ -1,11 +1,12 @@
 ﻿import os
-import asyncio
 import re
+import asyncio
 import io
 import shutil
 import sys
 import logging
 from pathlib import Path
+from typing import Optional, List, Dict, Any
 import pytesseract
 from PIL import Image
 from curl_cffi.requests import AsyncSession
@@ -65,14 +66,14 @@ def _fix_url(url):
     if url.startswith("/"): return BASE_URL + url
     return url
 
-def preprocess_captcha(img_bytes):
+def _preprocess_captcha(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('L')
     return img.point(lambda p: 255 if p > 120 else 0, 'L')
 
 # ==========================================
 # DYNAMIC SLUG DISCOVERY
 # ==========================================
-async def _find_slug(session, title: str) -> str | None:
+async def _find_slug(session, title: str) -> Optional[str]:
     """Discover the real slug with ID suffix (e.g. 'Breaking-Bad-9')."""
     slug_base = title.replace(" ", "-")
     
@@ -82,14 +83,13 @@ async def _find_slug(session, title: str) -> str | None:
         resp = await session.get(f"{BASE_URL}/search?searchname={slug_base}", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # BS4: Look for <a> tags containing the show name followed by a dash and numbers
         for a in soup.find_all('a', href=True):
             match = re.search(rf'({re.escape(slug_base)}-[0-9]+)', a['href'], re.IGNORECASE)
             if match:
                 logger.debug(f"Found slug via BS4: {match.group(1)}")
                 return match.group(1)
         
-        # Regex Fallback: If BS4 misses it due to weird DOM nesting
+        # Regex Fallback
         pattern = rf'href="([^"]*?{re.escape(slug_base)}-[0-9]+/?)"'
         m = re.search(pattern, resp.text, re.IGNORECASE)
         if m:
@@ -106,7 +106,6 @@ async def _find_slug(session, title: str) -> str | None:
         try:
             test_slug = f"{slug_base}-{sid}"
             resp = await session.get(f"{BASE_URL}/{test_slug}/index.html", headers=HEADERS, timeout=8, allow_redirects=False)
-            # If it doesn't redirect to the homepage, we found the right ID
             if resp.status_code in [200, 301, 302]:
                 final = resp.headers.get("location", "")
                 if not final or test_slug.lower() in final.lower():
@@ -137,12 +136,12 @@ async def _find_slug(session, title: str) -> str | None:
 # ==========================================
 # MAIN EXTRACTION FLOW
 # ==========================================
-async def extract(title: str, season: int, episode: int):
+async def extract(title: str, season: int, episode: int) -> Optional[Dict[str, Any]]:
     if _is_debug(): logger.setLevel(logging.DEBUG)
     
     async with AsyncSession(impersonate="chrome", verify=False, proxy=_get_proxy()) as session:
         
-        # 1. Find real slug (handles DOM changes / ID suffixes)
+        # 1. Find real slug
         logger.debug(f"Step 1: Finding slug for '{title}'")
         slug = await _find_slug(session, title)
         if not slug:
@@ -157,7 +156,7 @@ async def extract(title: str, season: int, episode: int):
             logger.error(f"Season page failed. Status: {resp.status_code}, URL: {resp.url}")
             return None
             
-        # 3. Episode link (BS4 primary, Regex fallback)
+        # 3. Episode link
         logger.debug(f"Step 3: Finding Episode-{episode:02d} link")
         ep_url = None
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -186,7 +185,6 @@ async def extract(title: str, season: int, episode: int):
         download_url = None
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # BS4: Check for standard /download/ID links or areyouhuman redirects
         for a in soup.find_all('a', href=True):
             href = a.get('href', '')
             if '/download/' in href or 'areyouhuman' in href:
@@ -194,7 +192,6 @@ async def extract(title: str, season: int, episode: int):
                 logger.debug(f"Found download button via BS4: {download_url}")
                 break
                 
-        # Regex Fallback: If download link is hidden in JS or weird formatting
         if not download_url:
             logger.debug("BS4 failed for download btn, falling back to regex")
             dl_match = re.search(r'href="([^"]*?/download/\d+)"', resp.text)
@@ -212,7 +209,6 @@ async def extract(title: str, season: int, episode: int):
         resp = await session.get(download_url, headers=HEADERS, allow_redirects=True, timeout=15)
         captcha_url = str(resp.url)
         
-        # Handle rare case where it's a direct link
         if "areyouhuman" not in captcha_url:
             if ".mp4" in captcha_url or ".mkv" in captcha_url:
                 return {"download_url": captcha_url, "show": title, "season": season, "episode": episode}
@@ -226,7 +222,6 @@ async def extract(title: str, season: int, episode: int):
                 resp = await session.get(captcha_url, headers=HEADERS, timeout=15)
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 
-                # BS4 to find captcha image
                 img_tag = soup.find('img', src=re.compile(r'simplecaptcha1'))
                 if not img_tag:
                     logger.debug(f"Attempt {attempt}: BS4 no img, trying regex")
@@ -240,7 +235,7 @@ async def extract(title: str, season: int, episode: int):
                     img_full_url = _fix_url(img_tag.get('src', '').replace('&amp;', '&'))
                     
                 img_resp = await session.get(img_full_url, headers=HEADERS, timeout=10)
-                clean_img = preprocess_captcha(img_resp.content)
+                clean_img = _preprocess_captcha(img_resp.content)
                 captcha_text = re.sub(r'[^a-zA-Z0-9]', '', pytesseract.image_to_string(clean_img, config='--psm 8 --oem 3').strip())
                 
                 if not captcha_text:
@@ -271,7 +266,7 @@ async def extract(title: str, season: int, episode: int):
         return None
 
 
-def format_source(result: dict, subs=None, needs_transcode: bool = False):
+def format_source(result: Optional[Dict[str, Any]], subs=None, needs_transcode: bool = False) -> List[Dict[str, Any]]:
     if not result or not result.get("download_url"): return []
     return [{
         "name": "O2TV Direct",
