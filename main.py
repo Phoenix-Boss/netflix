@@ -3,8 +3,6 @@
 # ============================================================
 # NUCLEAR OPTION: Kill ALL proxy variables on startup.
 # Render paid tier has direct internet access — no proxy needed.
-# This removes them regardless of where they come from
-# (Dockerfile, Environment tab, Secrets tab, etc.)
 # ============================================================
 for var in ["PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY"]:
     os.environ.pop(var, None)
@@ -31,15 +29,61 @@ class ExtractItem(BaseModel):
 @app.api_route("/", methods=["GET", "HEAD"])
 async def index(): return await info()
 
+# ==========================================
+# UNIVERSAL STREAM ENDPOINT
+# Now accepts 'title' so O2TV, KissAsian, DramaCool can search if VidAPI fails!
+# ==========================================
 @app.get("/stream/{dbid}")
-async def get_stream(dbid: str, s: int = None, e: int = None):
+async def get_stream(dbid: str, s: int = None, e: int = None, title: str = None):
     if not dbid: raise HTTPException(status_code=404, detail="Invalid id")
-    result = await extract(dbid, s, e)
+    
+    # Pass title down to the fallback racers
+    result = await extract(dbid, s, e, title=title)
+    
     if not result: raise HTTPException(status_code=404, detail="No streams found")
     mt = "tv" if s is not None and e is not None else "movie"
     subs = await get_subtitles(result.get("imdb_id"), result.get("title"), mt, s, e)
     return {"status": 200, "info": "success", "sources": format_sources(result, subs)}
 
+# ==========================================
+# DEDICATED ASIAN DRAMA ENDPOINT
+# Bypasses VidAPI completely. Fast direct search by title.
+# ==========================================
+@app.get("/asian")
+async def asian_stream(title: str, s: int = None, e: int = None, provider: str = "dramacool"):
+    if not title: raise HTTPException(status_code=400, detail="Title is required")
+    
+    if provider.lower() == "kissasian":
+        from models.kissasian import extract as ka_extract, format_as_source as ka_format
+        result = await ka_extract(title, s, e, title=title)
+        if not result or not result.get("url"):
+            raise HTTPException(status_code=404, detail="Not found on KissAsian.")
+        formatted = ka_format(result)
+        return {"status": 200, "info": "success", **formatted}
+    else:
+        from models.dramacool import extract as dc_extract, format_as_source as dc_format
+        result = await dc_extract(title, s, e, title=title)
+        if not result or not result.get("url"):
+            raise HTTPException(status_code=404, detail="Not found on DramaCool.")
+        formatted = dc_format(result)
+        return {"status": 200, "info": "success", **formatted}
+
+# ==========================================
+# DEDICATED SHORT DRAMA ENDPOINT
+# ReelShort / ShortMax don't use IMDB IDs.
+# ==========================================
+@app.get("/shortdrama")
+async def shortdrama_stream(title: str, site: str = "reelshort", episode: int = None):
+    from models.shortdrama import extract as sd_extract, format_as_source as sd_format
+    result = await sd_extract(title, episode=episode, site=site)
+    if not result or not result.get("url"):
+        raise HTTPException(status_code=404, detail="Short drama not found.")
+    formatted = sd_format(result)
+    return {"status": 200, "info": "success", **formatted}
+
+# ==========================================
+# LEGACY ENDPOINTS
+# ==========================================
 @app.get("/fallback/{title}")
 async def movie_fallback(title: str, q: str = None):
     from models.fzmovies import get_fallback_stream
@@ -72,13 +116,15 @@ async def tv_smart(dbid: str, s: int = None, e: int = None, q: str = "1080p"):
     if sources: sources[0]["data"]["needs_transcode"] = False
     return {"status": 200, "provider": "vidapi", "sources": sources}
 
+# ==========================================
+# UTILITIES
+# ==========================================
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": VERSION, "providers": ["vidapi", "fzmovies (Pure Python)", "o2tv"]}
+    return {"status": "healthy", "version": VERSION, "providers": ["vidapi", "fzmovies", "o2tv", "kissasian", "dramacool", "shortdrama"]}
 
 @app.get("/test-proxy")
 async def test_proxy():
-    """Direct test: outbound connection without proxy."""
     from curl_cffi.requests import AsyncSession
     results = {}
     try:
