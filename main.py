@@ -5,9 +5,9 @@ import gzip
 import logging
 from io import BytesIO
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import httpx
 
@@ -403,13 +403,19 @@ async def clear_cache(category: str = None):
 # ERROR HANDLERS
 # ==========================================
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return {"status": exc.status_code, "detail": exc.detail}
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"status": exc.status_code, "detail": exc.detail},
+    )
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
+async def general_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
-    return {"status": 500, "detail": "Internal server error"}
+    return JSONResponse(
+        status_code=500,
+        content={"status": 500, "detail": "Internal server error"},
+    )
 
 if __name__ == "__main__":
     import uvicorn
