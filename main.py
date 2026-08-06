@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import asyncio
 import gzip
@@ -277,6 +277,70 @@ async def shortdrama_stream(title: str, site: str = "reelshort", episode: int = 
     except Exception as e:
         logger.error(f"Error in shortdrama_stream: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# DEDICATED TORRENT ENDPOINTS
+# ==========================================
+@app.get("/torrent/{dbid}")
+async def torrent_stream(dbid: str, s: int = None, e: int = None, title: str = None, quality: str = "1080p"):
+    """Search torrent sources for a movie or TV episode."""
+    if not dbid and not title:
+        raise HTTPException(status_code=400, detail="ID or title is required")
+    
+    try:
+        from models.torrents import extract as torrent_extract, format_torrent_sources, get_all_magnets
+        result = await torrent_extract(dbid, s=s, e=e, title=title, quality=quality)
+        
+        if not result or not result.get("_torrent_data", {}).get("magnet"):
+            raise HTTPException(status_code=404, detail="No torrents found")
+        
+        mt = "tv" if s is not None and e is not None else "movie"
+        subs = []
+        try:
+            subs = await get_subtitles(result.get("imdb_id", ""), result.get("title", ""), mt, s, e)
+        except Exception:
+            pass
+        
+        return {
+            "status": 200,
+            "info": "success",
+            "provider": result.get("provider", "Torrent"),
+            "torrent": result["_torrent_data"],
+            "magnets": get_all_magnets(result),
+            "sources": format_torrent_sources(result, subs)
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.error(f"Error in torrent_stream: {ex}")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@app.get("/torrent/search")
+async def torrent_search_endpoint(title: str, quality: str = "1080p"):
+    """Quick torrent search by title only."""
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+    
+    try:
+        from models.torrents import extract as torrent_extract, get_all_magnets
+        result = await torrent_extract("search", title=title, quality=quality)
+        
+        if not result or not result.get("_torrent_data", {}).get("magnet"):
+            raise HTTPException(status_code=404, detail="No torrents found")
+        
+        return {
+            "status": 200,
+            "info": "success",
+            "torrent": result["_torrent_data"],
+            "alternatives": result.get("alternatives", []),
+            "magnets": get_all_magnets(result),
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.error(f"Error in torrent_search: {ex}")
+        raise HTTPException(status_code=500, detail=str(ex))
 
 # ==========================================
 # LEGACY ENDPOINTS
