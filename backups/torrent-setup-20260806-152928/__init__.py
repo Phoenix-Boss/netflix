@@ -1,7 +1,6 @@
 import os
 from typing import Optional, List, Dict, Any
 from .vidapi import extract, format_sources, extract_quality
-from .torrents import extract as torrent_extract, format_torrent_sources, get_best_magnet, get_all_magnets
 from .subtitles import get_subtitles
 from .utils import fetch, error
 

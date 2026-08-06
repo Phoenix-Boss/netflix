@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import json
 import asyncio
@@ -15,7 +15,6 @@ from .o2tv import extract as o2tv_extract
 from .fzmovies import extract as fzmovies_extract
 from .kissasian import extract as kissasian_extract
 from .dramacool import extract as dramacool_extract
-from .torrents import extract as torrents_extract, format_torrent_sources
 
 # ==========================================
 # LOGGING SETUP (Enable with VIDAPI_DEBUG=1)
@@ -215,29 +214,6 @@ async def _try_domain(domain, dbid, media_type, s, e, session):
         return None
 
 
-
-# ==========================================
-# TORRENT FALLBACK WRAPPER
-# ==========================================
-async def _try_torrents(dbid, s, e, title):
-    """Try torrent sources as fallback when streaming fails"""
-    try:
-        logger.debug(f"(Torrents) Searching for {title}...")
-        result = await torrents_extract(dbid, s=s, e=e, title=title, quality="1080p")
-        if result and result.get("_torrent_data", {}).get("magnet"):
-            return {
-                "stream_urls": [],
-                "imdb_id": dbid,
-                "title": result.get("title", title),
-                "file_name": result["_torrent_data"].get("name", ""),
-                "backdrop": "",
-                "provider": result.get("provider", "Torrent"),
-                "_is_torrent": True,
-                "_torrent_data": result
-            }
-    except Exception as ex:
-        logger.debug(f"(Torrents) err: {ex}")
-    return None
 # ==========================================
 # RACE POOL
 # ==========================================
@@ -258,7 +234,7 @@ async def _do_extract(dbid, media_type, s, e, title=None):
             for task in done:
                 if task.exception(): continue
                 result = task.result()
-                if isinstance(result, dict) and (result.get("stream_urls") or result.get("_is_torrent")):
+                if isinstance(result, dict) and result.get("stream_urls"):
                     for p in pending: p.cancel()
                     return result
         return None

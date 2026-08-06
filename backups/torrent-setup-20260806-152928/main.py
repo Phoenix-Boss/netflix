@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import asyncio
 import gzip
@@ -142,7 +142,7 @@ async def health():
         "status": "healthy",
         "version": VERSION,
         "python_version": sys.version.split()[0],
-        "providers": ["vidapi", "fzmovies", "o2tv", "kissasian", "dramacool", "shortdrama", "torrents"]
+        "providers": ["vidapi", "fzmovies", "o2tv", "kissasian", "dramacool", "shortdrama"]
     }
 
 # ==========================================
