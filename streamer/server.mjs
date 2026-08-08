@@ -1,11 +1,3 @@
-cd C:\Users\Boss\Desktop\EDGES\vidsrc-api
- $utf8 = [System.Text.UTF8Encoding]::new($false)
-
-# Delete the old file
-Remove-Item "streamer\server.js" -Force -ErrorAction SilentlyContinue
-
-# Create server.mjs using modern ESM imports (Node 24 compatible)
-[System.IO.File]::WriteAllText("streamer\server.mjs", @'
 import WebTorrent from 'webtorrent';
 import express from 'express';
 import cors from 'cors';
@@ -93,16 +85,3 @@ function cleanup(magnet, torrent) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => console.log('Streamer running on port ' + PORT));
-'@, $utf8)
-
-# Update package.json main entry
- $pkgPath = "streamer\package.json"
- $pkgContent = [System.IO.File]::ReadAllText($pkgPath, $utf8)
- $pkgContent = $pkgContent.Replace('"main": "server.js"', '"main": "server.mjs"')
-[System.IO.File]::WriteAllText($pkgPath, $pkgContent, $utf8)
-
-Write-Host "[OK] Converted to ESM (server.mjs)"
-
-git add -A
-git commit -m "Fix Node v24 ESM module error"
-git push origin main
