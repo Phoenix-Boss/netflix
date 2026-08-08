@@ -1,7 +1,10 @@
 FROM node:18-alpine
 WORKDIR /app
-COPY package*.json ./
+
+# Explicitly target the streamer subfolder
+COPY streamer/package*.json ./
 RUN npm install --production
-COPY . .
+COPY streamer/ .
+
 EXPOSE 3000
 CMD ["npm", "start"]
