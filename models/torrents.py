@@ -164,6 +164,93 @@ async def _scrape_yts(query, session):
         if _dbg(): logger.debug(f"(YTS) err: {ex}")
         return []
 
+import json, re
+from curl_cffi.requests import AsyncSession
+
+async def get_webtor_stream(magnet, title=""):
+    """Convert magnet to direct HLS/MP4 stream using Webtor's public API (Free, Unlimited)"""
+    if not magnet: return None
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Origin": "https://webtor.io",
+            "Referer": "https://webtor.io/"
+        }
+        
+        proxy = _proxy()
+        async with AsyncSession(impersonate="chrome", verify=False, proxy=proxy, timeout=30) as session:
+            # Step 1: Tell Webtor to fetch the torrent
+            logger.info(f"(Webtor) Creating torrent session...")
+            resp = await session.post(
+                "https://webtor.io/api/v1/torrent/create",
+                headers=headers,
+                data=json.dumps({"url": magnet}).encode('utf-8')
+            )
+            if resp.status_code not in [200, 201]:
+                logger.debug(f"(Webtor) Failed to create session: {resp.status_code}")
+                return None
+                
+            data = resp.json()
+            info_hash = data.get("hash")
+            if not info_hash:
+                logger.debug(f"(Webtor) No hash returned: {data}")
+                return None
+
+            # Step 2: Get the list of files inside the torrent
+            logger.info(f"(Webtor) Fetching file list for {info_hash[:8]}...")
+            await asyncio.sleep(1) # Give Webtor a second to parse metadata
+            resp2 = await session.get(
+                f"https://webtor.io/api/v1/torrent/{info_hash}/list",
+                headers=headers
+            )
+            if resp2.status_code != 200:
+                return None
+                
+            files = resp2.json().get("files", [])
+            if not files:
+                logger.debug("(Webtor) No files found in torrent")
+                return None
+
+            # Step 3: Find the largest video file (MP4, MKV, etc.)
+            video_exts = ['.mp4', '.mkv', '.webm', '.avi']
+            best_file = None
+            best_size = 0
+            
+            for i, f in enumerate(files):
+                ext = f.get("name", "").lower()
+                if any(ext.endswith(e) for e in video_exts):
+                    size = f.get("size", 0)
+                    if size > best_size:
+                        best_size = size
+                        best_file = i
+
+            if best_file is None:
+                logger.debug("(Webtor) No video files found")
+                return None
+
+            # Step 4: Request the stream URL for that file
+            logger.info(f"(Webtor) Requesting stream URL...")
+            resp3 = await session.get(
+                f"https://webtor.io/api/v1/torrent/{info_hash}/stream/{best_file}",
+                headers=headers
+            )
+            if resp3.status_code != 200:
+                return None
+
+            stream_data = resp3.json()
+            stream_url = stream_data.get("url") or stream_data.get("src") or stream_data.get("stream")
+            
+            if stream_url:
+                logger.info(f"(Webtor) SUCCESS: Got stream URL!")
+                return stream_url
+                
+            return None
+            
+    except Exception as ex:
+        logger.debug(f"(Webtor) Error: {ex}")
+        return None
 async def extract(dbid, s=None, e=None, title=None, quality="1080p", retry=True):
     if not title: return None
     is_tv = s is not None and e is not None
