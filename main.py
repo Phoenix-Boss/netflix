@@ -8,13 +8,16 @@ from pydantic import BaseModel
 import httpx
 
 # ==========================================
-# PROXY HANDLING (Render Environment Fix)
+# CRITICAL FIX: KILL RENDER'S INTERNAL PROXY
 # ==========================================
-# WARNING: Do NOT strip proxy environment variables here! 
-# Render injects an internal proxy that requires auth (causing 407 errors).
-# Instead of deleting the vars, we explicitly pass `proxy=False` inside
-# our curl_cffi sessions (in models/vidapi.py and models/fzmovies.py) 
-# to tell cURL to connect directly and bypass Render's proxy entirely.
+# Render injects HTTPS_PROXY which causes 407 Auth Required errors.
+# We MUST delete these before importing curl_cffi/models, otherwise cURL
+# will forcefully try to use the proxy and crash every single request.
+for var in [
+    "PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
+    "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy",
+]:
+    os.environ.pop(var, None)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -529,7 +532,6 @@ async def test_proxy():
         from curl_cffi.requests import AsyncSession
         results = {}
         try:
-            # CRITICAL: Added proxy=False to bypass Render's 407 proxy error
             async with AsyncSession(proxy=False) as session:
                 r = await session.get("https://httpbin.org/ip", timeout=10)
                 results["direct_https"] = {
