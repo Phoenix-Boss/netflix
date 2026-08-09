@@ -34,10 +34,13 @@ def _is_debug():
 # ==========================================
 # CONFIGURATION
 # ==========================================
-VIDSRC_DOMAINS = [
-    "vidsrc.pm", "vidsrc.rip", "vidsrc.cc",
+PRIMARY_DOMAIN = "vidsrc.pm"
+
+FALLBACK_VIDSRC_DOMAINS = [
+    "vidsrc.rip", "vidsrc.cc",
     "vidsrc.lol", "vidsrc.top", "vidsrc.dev",
 ]
+
 TIMEOUT = 8
 
 _pending: dict[str, asyncio.Future] = {}
@@ -57,7 +60,7 @@ def _get_proxy():
 # ==========================================
 # MAIN ENTRY POINT
 # ==========================================
-async def extract(dbid, s=None, e=None, title=None, retry=True):
+async def extract(dbid, s=None, e=None, title=None, year=None, retry=True):
     media_type = "tv" if s is not None and e is not None else "movie"
     cache_key = f"stream:{media_type}:{dbid}:{s}:{e}"
 
@@ -82,11 +85,11 @@ async def extract(dbid, s=None, e=None, title=None, retry=True):
     _pending[cache_key] = future
 
     try:
-        result = await _do_extract(dbid, media_type, s, e, title)
+        result = await _do_extract(dbid, media_type, s, e, title, year)
         if result is None and retry:
             logger.debug(f"RETRY: {dbid}")
             await asyncio.sleep(1)
-            result = await _do_extract(dbid, media_type, s, e, title)
+            result = await _do_extract(dbid, media_type, s, e, title, year)
 
         if result:
             cache_set(cache_key, result)
@@ -125,11 +128,33 @@ async def _try_o2tv(dbid, s, e, title):
     return None
 
 
-async def _try_fzmovies(dbid, title):
+async def _try_fzmovies(dbid, title, year=None):
+    """Search FZMovies with title + year to avoid wrong-version matches."""
     try:
-        logger.debug(f"(FZMovies) Searching for {title}...")
-        result = await fzmovies_extract(title)
+        # Build search query — always include year when available so we
+        # don't accidentally grab a 2016 copy when the user wants 2026.
+        search_query = f"{title} {year}" if year else title
+        logger.debug(f"(FZMovies) Searching for: {search_query}")
+        result = await fzmovies_extract(search_query)
         if result and result.get("download_url"):
+            # Extra sanity check: if we have a year and the result contains
+            # a year in its metadata that doesn't match, skip it.
+            if year:
+                result_title = (result.get("title") or "").lower()
+                result_file = (result.get("file_name") or "").lower()
+                combined = f"{result_title} {result_file}"
+                # Look for a 4-digit year in the result
+                found_years = re.findall(r"\b(19|20)\d{2}\b", combined)
+                if found_years:
+                    # If none of the years in the result match the requested
+                    # year, reject this result — it's the wrong version.
+                    if str(year) not in found_years:
+                        logger.debug(
+                            f"(FZMovies) Year mismatch: wanted {year}, "
+                            f"found {found_years} in '{combined}' — skipping"
+                        )
+                        return None
+
             return {
                 "stream_urls": [result["download_url"]],
                 "imdb_id": dbid,
@@ -319,25 +344,57 @@ async def _try_domain(domain, dbid, media_type, s, e, session):
 
 
 # ==========================================
-# RACE POOL  (streaming sources only)
+# EXTRACTION LOGIC
 # ==========================================
-async def _do_extract(dbid, media_type, s, e, title=None):
+async def _do_extract(dbid, media_type, s, e, title=None, year=None):
     async with AsyncSession(
         impersonate="chrome", verify=False, proxy=_get_proxy()
     ) as session:
 
-        # --- Phase 1: race all streaming sources ---
+        # ============================================================
+        # PHASE 1 — PRIMARY SOURCE (vidsrc.pm) — always tried alone
+        # ============================================================
+        # We never race vidsrc.pm against anything. If it returns a
+        # valid result, that IS the answer — no fallbacks needed.
+        # ============================================================
+        logger.debug(f"(PRIMARY) Trying {PRIMARY_DOMAIN} for {dbid}...")
+        primary_result = await _try_domain(
+            PRIMARY_DOMAIN, dbid, media_type, s, e, session
+        )
+        if isinstance(primary_result, dict) and primary_result.get("stream_urls"):
+            logger.debug(f"(PRIMARY) {PRIMARY_DOMAIN} succeeded for {dbid}")
+            return primary_result
+
+        logger.debug(
+            f"(PRIMARY) {PRIMARY_DOMAIN} failed for {dbid}, "
+            f"entering fallback phase..."
+        )
+
+        # ============================================================
+        # PHASE 2 — FALLBACK SOURCES (raced in parallel)
+        # Only reached if vidsrc.pm returned nothing usable.
+        # ============================================================
         pending = {
-            asyncio.create_task(_try_domain(d, dbid, media_type, s, e, session))
-            for d in VIDSRC_DOMAINS
+            asyncio.create_task(
+                _try_domain(d, dbid, media_type, s, e, session)
+            )
+            for d in FALLBACK_VIDSRC_DOMAINS
         }
 
         if media_type == "movie" and title:
-            pending.add(asyncio.create_task(_try_fzmovies(dbid, title)))
+            pending.add(
+                asyncio.create_task(_try_fzmovies(dbid, title, year))
+            )
         elif media_type == "tv" and title:
-            pending.add(asyncio.create_task(_try_o2tv(dbid, s, e, title)))
-            pending.add(asyncio.create_task(_try_kissasian(dbid, s, e, title)))
-            pending.add(asyncio.create_task(_try_dramacool(dbid, s, e, title)))
+            pending.add(
+                asyncio.create_task(_try_o2tv(dbid, s, e, title))
+            )
+            pending.add(
+                asyncio.create_task(_try_kissasian(dbid, s, e, title))
+            )
+            pending.add(
+                asyncio.create_task(_try_dramacool(dbid, s, e, title))
+            )
 
         while pending:
             done, pending = await asyncio.wait(
@@ -353,9 +410,13 @@ async def _do_extract(dbid, media_type, s, e, title=None):
                         p.cancel()
                     return result
 
-        # --- Phase 2: torrent fallback (sequential, only if everything else failed) ---
+        # ============================================================
+        # PHASE 3 — TORRENT FALLBACK (sequential, last resort)
+        # ============================================================
         if title:
-            logger.debug(f"No streaming source found for {title}, trying torrents...")
+            logger.debug(
+                f"No streaming source found for {title}, trying torrents..."
+            )
             return await _try_torrents(dbid, s, e, title)
 
         return None
