@@ -7,12 +7,19 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import httpx
 
-# Strip all proxy env vars so every request goes direct (no upstream proxy leak)
-for var in [
-    "PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
-    "https_proxy", "http_proxy", "ALL_PROXY",
-]:
-    os.environ.pop(var, None)
+# ==========================================
+# CRITICAL FIX: PROXY PRESERVATION
+# ==========================================
+# WARNING: Do NOT strip proxy variables here! 
+# Your internal vidsrc.pm scraper (_get_proxy in __init__.py) relies on 
+# these exact environment variables to bypass Cloudflare anti-bot.
+# If you delete them on startup, vidsrc.pm WILL fail and fallback to FZMovies.
+#
+# for var in [
+#     "PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
+#     "https_proxy", "http_proxy", "ALL_PROXY",
+# ]:
+#     os.environ.pop(var, None)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,6 +58,7 @@ class ExtractItem(BaseModel):
     type: str = "movie"
     season: Optional[int] = None
     episode: Optional[int] = None
+    year: Optional[int] = None  # Added year to request model
 
 
 # ---------------------------------------------------------------------------
@@ -189,12 +197,14 @@ async def get_prorcp(
     s: int = None,
     e: int = None,
     title: str = None,
+    year: int = None,  # ADDED: Year parameter
 ):
     if not dbid:
         raise HTTPException(status_code=404, detail="Invalid id")
     try:
         meta_task = _fetch_tmdb_meta(dbid, type)
-        stream_task = extract(dbid, s, e, title=title)
+        # ADDED: Pass year=year to extract
+        stream_task = extract(dbid, s, e, title=title, year=year)
         mt = "tv" if s is not None and e is not None else "movie"
 
         meta_res, stream_res = await asyncio.gather(
@@ -245,11 +255,13 @@ async def get_stream(
     s: int = None,
     e: int = None,
     title: str = None,
+    year: int = None,  # ADDED: Year parameter
 ):
     if not dbid:
         raise HTTPException(status_code=404, detail="Invalid id")
     try:
-        result = await extract(dbid, s, e, title=title)
+        # ADDED: Pass year=year to extract
+        result = await extract(dbid, s, e, title=title, year=year)
         if not result:
             raise HTTPException(status_code=404, detail="No streams found")
         mt = "tv" if s is not None and e is not None else "movie"
@@ -428,10 +440,11 @@ async def torrent_search_endpoint(
 # ---------------------------------------------------------------------------
 
 @app.get("/fallback/{title}")
-async def movie_fallback(title: str, q: str = None):
+async def movie_fallback(title: str, q: str = None, year: int = None):
     try:
         from models.fzmovies import get_fallback_stream
-        result = await get_fallback_stream(title, q)
+        # Note: Ensure get_fallback_stream in fzmovies.py accepts year=year if you want strict year matching here too
+        result = await get_fallback_stream(title, q, year=year)
         if not result:
             raise HTTPException(
                 status_code=404,
