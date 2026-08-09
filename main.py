@@ -8,18 +8,13 @@ from pydantic import BaseModel
 import httpx
 
 # ==========================================
-# CRITICAL FIX: PROXY PRESERVATION
+# PROXY HANDLING (Render Environment Fix)
 # ==========================================
-# WARNING: Do NOT strip proxy variables here! 
-# Your internal vidsrc.pm scraper (_get_proxy in __init__.py) relies on 
-# these exact environment variables to bypass Cloudflare anti-bot.
-# If you delete them on startup, vidsrc.pm WILL fail and fallback to FZMovies.
-#
-# for var in [
-#     "PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
-#     "https_proxy", "http_proxy", "ALL_PROXY",
-# ]:
-#     os.environ.pop(var, None)
+# WARNING: Do NOT strip proxy environment variables here! 
+# Render injects an internal proxy that requires auth (causing 407 errors).
+# Instead of deleting the vars, we explicitly pass `proxy=False` inside
+# our curl_cffi sessions (in models/vidapi.py and models/fzmovies.py) 
+# to tell cURL to connect directly and bypass Render's proxy entirely.
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,7 +53,7 @@ class ExtractItem(BaseModel):
     type: str = "movie"
     season: Optional[int] = None
     episode: Optional[int] = None
-    year: Optional[int] = None  # Added year to request model
+    year: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +192,12 @@ async def get_prorcp(
     s: int = None,
     e: int = None,
     title: str = None,
-    year: int = None,  # ADDED: Year parameter
+    year: int = None,
 ):
     if not dbid:
         raise HTTPException(status_code=404, detail="Invalid id")
     try:
         meta_task = _fetch_tmdb_meta(dbid, type)
-        # ADDED: Pass year=year to extract
         stream_task = extract(dbid, s, e, title=title, year=year)
         mt = "tv" if s is not None and e is not None else "movie"
 
@@ -255,12 +249,11 @@ async def get_stream(
     s: int = None,
     e: int = None,
     title: str = None,
-    year: int = None,  # ADDED: Year parameter
+    year: int = None,
 ):
     if not dbid:
         raise HTTPException(status_code=404, detail="Invalid id")
     try:
-        # ADDED: Pass year=year to extract
         result = await extract(dbid, s, e, title=title, year=year)
         if not result:
             raise HTTPException(status_code=404, detail="No streams found")
@@ -443,7 +436,6 @@ async def torrent_search_endpoint(
 async def movie_fallback(title: str, q: str = None, year: int = None):
     try:
         from models.fzmovies import get_fallback_stream
-        # Note: Ensure get_fallback_stream in fzmovies.py accepts year=year if you want strict year matching here too
         result = await get_fallback_stream(title, q, year=year)
         if not result:
             raise HTTPException(
@@ -537,7 +529,8 @@ async def test_proxy():
         from curl_cffi.requests import AsyncSession
         results = {}
         try:
-            async with AsyncSession() as session:
+            # CRITICAL: Added proxy=False to bypass Render's 407 proxy error
+            async with AsyncSession(proxy=False) as session:
                 r = await session.get("https://httpbin.org/ip", timeout=10)
                 results["direct_https"] = {
                     "status": r.status_code,
@@ -546,7 +539,7 @@ async def test_proxy():
         except Exception as e:
             results["direct_https"] = {"error": str(e)}
         return {
-            "proxy_used": os.environ.get("PROXY_URL", "NONE"),
+            "proxy_used": "Disabled (Direct Connection)",
             "tests": results,
         }
     except Exception as e:
