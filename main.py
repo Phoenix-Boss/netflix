@@ -1,6 +1,6 @@
 ﻿import os, sys, asyncio, gzip, logging
 from io import BytesIO
-from typing import Optional, List
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -10,9 +10,6 @@ import httpx
 # ==========================================
 # CRITICAL FIX: KILL RENDER'S INTERNAL PROXY
 # ==========================================
-# Render injects HTTPS_PROXY which causes 407 Auth Required errors.
-# We MUST delete these before importing curl_cffi/models, otherwise cURL
-# will forcefully try to use the proxy and crash every single request.
 for var in [
     "PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY",
     "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy",
@@ -66,34 +63,24 @@ class ExtractItem(BaseModel):
 async def _fetch_tmdb_meta(dbid: str, mtype: str) -> dict:
     api_key = os.environ.get("TMDB_API_KEY")
     if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="TMDB_API_KEY not configured on server.",
-        )
-    url = (
-        f"https://api.themoviedb.org/3/{mtype}/{dbid}"
-        f"?api_key={api_key}&append_to_response=credits"
-    )
+        raise HTTPException(status_code=500, detail="TMDB_API_KEY not configured on server.")
+
+    url = f"https://api.themoviedb.org/3/{mtype}/{dbid}?api_key={api_key}&append_to_response=credits"
+    
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(url, timeout=10.0)
             if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=404, detail="TMDB metadata not found."
-                )
+                raise HTTPException(status_code=404, detail="TMDB metadata not found.")
+            
             d = resp.json()
-
-            # Certification
             certification = ""
+            
             if mtype == "movie":
                 try:
                     dates = d.get("release_dates", {}).get("results", [])
                     if dates:
-                        certification = (
-                            dates[0]
-                            .get("release_dates", [{}])[0]
-                            .get("certification", "")
-                        )
+                        certification = dates[0].get("release_dates", [{}])[0].get("certification", "")
                 except Exception:
                     pass
             else:
@@ -112,10 +99,8 @@ async def _fetch_tmdb_meta(dbid: str, mtype: str) -> dict:
                 "backdrop": d.get("backdrop_path", ""),
                 "rating": d.get("vote_average", 0),
                 "vote_count": d.get("vote_count", 0),
-                "runtime": d.get("runtime")
-                or (d.get("episode_run_time", [None])[0]),
-                "release_date": d.get("release_date")
-                or d.get("first_air_date", ""),
+                "runtime": d.get("runtime") or (d.get("episode_run_time", [None])[0]),
+                "release_date": d.get("release_date") or d.get("first_air_date", ""),
                 "genres": [g["name"] for g in d.get("genres", [])],
                 "number_of_seasons": d.get("number_of_seasons", 0),
                 "status": d.get("status", ""),
@@ -138,9 +123,7 @@ async def _fetch_tmdb_meta(dbid: str, mtype: str) -> dict:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"TMDB API error: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"TMDB API error: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +142,6 @@ async def index():
             "python_version": sys.version.split()[0],
         }
 
-
 @app.get("/health")
 @app.head("/health")
 async def health():
@@ -167,10 +149,7 @@ async def health():
         "status": "healthy",
         "version": VERSION,
         "python_version": sys.version.split()[0],
-        "providers": [
-            "vidapi", "fzmovies", "o2tv",
-            "kissasian", "dramacool", "shortdrama", "torrents",
-        ],
+        "providers": ["vidapi", "fzmovies", "o2tv", "kissasian", "dramacool", "shortdrama", "torrents"],
     }
 
 
@@ -187,15 +166,10 @@ async def get_rcp(dbid: str, type: str = "movie"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/prorcp/{dbid}")
 async def get_prorcp(
-    dbid: str,
-    type: str = "movie",
-    s: int = None,
-    e: int = None,
-    title: str = None,
-    year: int = None,
+    dbid: str, type: str = "movie", s: int = None, e: int = None,
+    title: str = None, year: int = None,
 ):
     if not dbid:
         raise HTTPException(status_code=404, detail="Invalid id")
@@ -204,13 +178,10 @@ async def get_prorcp(
         stream_task = extract(dbid, s, e, title=title, year=year)
         mt = "tv" if s is not None and e is not None else "movie"
 
-        meta_res, stream_res = await asyncio.gather(
-            meta_task, stream_task, return_exceptions=True
-        )
+        meta_res, stream_res = await asyncio.gather(meta_task, stream_task, return_exceptions=True)
+        
         if isinstance(meta_res, Exception):
-            raise HTTPException(
-                status_code=404, detail=f"Meta failed: {str(meta_res)}"
-            )
+            raise HTTPException(status_code=404, detail=f"Meta failed: {str(meta_res)}")
         if isinstance(stream_res, Exception):
             stream_res = None
 
@@ -231,8 +202,7 @@ async def get_prorcp(
             "sources": format_sources(stream_res, subs) if stream_res else [],
             "stream_url": (
                 stream_res.get("stream_urls", [None])[0]
-                if stream_res and stream_res.get("stream_urls")
-                else None
+                if stream_res and stream_res.get("stream_urls") else None
             ),
             "provider": stream_res.get("provider") if stream_res else None,
         }
@@ -248,11 +218,8 @@ async def get_prorcp(
 
 @app.get("/stream/{dbid}")
 async def get_stream(
-    dbid: str,
-    s: int = None,
-    e: int = None,
-    title: str = None,
-    year: int = None,
+    dbid: str, s: int = None, e: int = None,
+    title: str = None, year: int = None,
 ):
     if not dbid:
         raise HTTPException(status_code=404, detail="Invalid id")
@@ -260,10 +227,10 @@ async def get_stream(
         result = await extract(dbid, s, e, title=title, year=year)
         if not result:
             raise HTTPException(status_code=404, detail="No streams found")
+            
         mt = "tv" if s is not None and e is not None else "movie"
-        subs = await get_subtitles(
-            result.get("imdb_id"), result.get("title"), mt, s, e
-        )
+        subs = await get_subtitles(result.get("imdb_id"), result.get("title"), mt, s, e)
+        
         return {
             "status": 200,
             "info": "success",
@@ -281,35 +248,22 @@ async def get_stream(
 
 @app.get("/asian")
 async def asian_stream(
-    title: str,
-    s: int = None,
-    e: int = None,
-    provider: str = "dramacool",
+    title: str, s: int = None, e: int = None, provider: str = "dramacool"
 ):
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
     try:
         if provider.lower() == "kissasian":
-            from models.kissasian import (
-                extract as ka_extract,
-                format_as_source as ka_format,
-            )
+            from models.kissasian import extract as ka_extract, format_as_source as ka_format
             result = await ka_extract(title, s, e, title=title)
             if not result or not result.get("url"):
-                raise HTTPException(
-                    status_code=404, detail="Not found on KissAsian."
-                )
+                raise HTTPException(status_code=404, detail="Not found on KissAsian.")
             return {"status": 200, "info": "success", **ka_format(result)}
         else:
-            from models.dramacool import (
-                extract as dc_extract,
-                format_as_source as dc_format,
-            )
+            from models.dramacool import extract as dc_extract, format_as_source as dc_format
             result = await dc_extract(title, s, e, title=title)
             if not result or not result.get("url"):
-                raise HTTPException(
-                    status_code=404, detail="Not found on DramaCool."
-                )
+                raise HTTPException(status_code=404, detail="Not found on DramaCool.")
             return {"status": 200, "info": "success", **dc_format(result)}
     except HTTPException:
         raise
@@ -322,21 +276,12 @@ async def asian_stream(
 # ---------------------------------------------------------------------------
 
 @app.get("/shortdrama")
-async def shortdrama_stream(
-    title: str,
-    site: str = "reelshort",
-    episode: int = None,
-):
+async def shortdrama_stream(title: str, site: str = "reelshort", episode: int = None):
     try:
-        from models.shortdrama import (
-            extract as sd_extract,
-            format_as_source as sd_format,
-        )
+        from models.shortdrama import extract as sd_extract, format_as_source as sd_format
         result = await sd_extract(title, episode=episode, site=site)
         if not result or not result.get("url"):
-            raise HTTPException(
-                status_code=404, detail="Short drama not found."
-            )
+            raise HTTPException(status_code=404, detail="Short drama not found.")
         return {"status": 200, "info": "success", **sd_format(result)}
     except HTTPException:
         raise
@@ -350,36 +295,21 @@ async def shortdrama_stream(
 
 @app.get("/torrent/{dbid}")
 async def torrent_stream(
-    dbid: str,
-    s: int = None,
-    e: int = None,
-    title: str = None,
-    quality: str = "1080p",
+    dbid: str, s: int = None, e: int = None,
+    title: str = None, quality: str = "1080p",
 ):
     if not dbid and not title:
-        raise HTTPException(
-            status_code=400, detail="ID or title is required"
-        )
+        raise HTTPException(status_code=400, detail="ID or title is required")
     try:
-        from models.torrents import (
-            extract as torrent_extract,
-            format_torrent_sources,
-            get_all_magnets,
-        )
-        result = await torrent_extract(
-            dbid, s=s, e=e, title=title, quality=quality
-        )
+        from models.torrents import extract as torrent_extract, format_torrent_sources, get_all_magnets
+        result = await torrent_extract(dbid, s=s, e=e, title=title, quality=quality)
         if not result or not result.get("_torrent_data", {}).get("magnet"):
             raise HTTPException(status_code=404, detail="No torrents found")
 
         mt = "tv" if s is not None and e is not None else "movie"
         subs = []
         try:
-            subs = await get_subtitles(
-                result.get("imdb_id", ""),
-                result.get("title", ""),
-                mt, s, e,
-            )
+            subs = await get_subtitles(result.get("imdb_id", ""), result.get("title", ""), mt, s, e)
         except Exception:
             pass
 
@@ -396,23 +326,13 @@ async def torrent_stream(
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex))
 
-
 @app.get("/torrent/search")
-async def torrent_search_endpoint(
-    title: str,
-    quality: str = "1080p",
-):
+async def torrent_search_endpoint(title: str, quality: str = "1080p"):
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
     try:
-        from models.torrents import (
-            extract as torrent_extract,
-            format_torrent_sources,
-            get_all_magnets,
-        )
-        result = await torrent_extract(
-            "search", title=title, quality=quality
-        )
+        from models.torrents import extract as torrent_extract, format_torrent_sources, get_all_magnets
+        result = await torrent_extract("search", title=title, quality=quality)
         if not result or not result.get("_torrent_data", {}).get("magnet"):
             raise HTTPException(status_code=404, detail="No torrents found")
 
@@ -441,10 +361,7 @@ async def movie_fallback(title: str, q: str = None, year: int = None):
         from models.fzmovies import get_fallback_stream
         result = await get_fallback_stream(title, q, year=year)
         if not result:
-            raise HTTPException(
-                status_code=404,
-                detail="Movie not found on fallback provider.",
-            )
+            raise HTTPException(status_code=404, detail="Movie not found on fallback provider.")
         return {
             "status": 200,
             "provider": "fzmovies",
@@ -457,40 +374,28 @@ async def movie_fallback(title: str, q: str = None, year: int = None):
 
 
 # ---------------------------------------------------------------------------
-# Smart TV endpoint (o2tv for low-quality, vidapi otherwise)
+# Smart TV endpoint
 # ---------------------------------------------------------------------------
 
 @app.get("/smart/{dbid}")
 async def tv_smart(dbid: str, s: int = None, e: int = None, q: str = "1080p"):
     try:
-        from models.o2tv import (
-            extract as o2tv_extract,
-            format_source as o2tv_format,
-        )
+        from models.o2tv import extract as o2tv_extract, format_source as o2tv_format
 
-        # Low-quality TV → try o2tv direct MP4 first, fall back to vidapi + transcode
         if q in ["480p", "720p"] and s is not None and e is not None:
             primary_result = await extract(dbid, s, e)
             if primary_result and primary_result.get("title"):
                 title = primary_result.get("title")
                 o2tv_result = await o2tv_extract(title, s, e)
                 if o2tv_result and o2tv_result.get("download_url"):
-                    subs = await get_subtitles(
-                        primary_result.get("imdb_id", ""),
-                        title, "tv", s, e,
-                    )
+                    subs = await get_subtitles(primary_result.get("imdb_id", ""), title, "tv", s, e)
                     return {
                         "status": 200,
                         "provider": "o2tv (Direct MP4)",
-                        "sources": o2tv_format(
-                            o2tv_result, subs, needs_transcode=False
-                        ),
+                        "sources": o2tv_format(o2tv_result, subs, needs_transcode=False),
                     }
                 else:
-                    subs = await get_subtitles(
-                        primary_result.get("imdb_id", ""),
-                        title, "tv", s, e,
-                    )
+                    subs = await get_subtitles(primary_result.get("imdb_id", ""), title, "tv", s, e)
                     sources = format_sources(primary_result, subs)
                     if sources:
                         sources[0]["data"]["needs_transcode"] = True
@@ -500,17 +405,16 @@ async def tv_smart(dbid: str, s: int = None, e: int = None, q: str = "1080p"):
                         "sources": sources,
                     }
 
-        # Default path
         result = await extract(dbid, s, e)
         if not result:
             raise HTTPException(status_code=404, detail="No streams found")
+            
         mt = "tv" if s is not None and e is not None else "movie"
-        subs = await get_subtitles(
-            result.get("imdb_id"), result.get("title"), mt, s, e
-        )
+        subs = await get_subtitles(result.get("imdb_id"), result.get("title"), mt, s, e)
         sources = format_sources(result, subs)
         if sources:
             sources[0]["data"]["needs_transcode"] = False
+            
         return {
             "status": 200,
             "provider": "vidapi",
@@ -526,85 +430,46 @@ async def tv_smart(dbid: str, s: int = None, e: int = None, q: str = "1080p"):
 # Utility endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/test-proxy")
-async def test_proxy():
-    try:
-        from curl_cffi.requests import AsyncSession
-        results = {}
-        try:
-            async with AsyncSession(proxy=False) as session:
-                r = await session.get("https://httpbin.org/ip", timeout=10)
-                results["direct_https"] = {
-                    "status": r.status_code,
-                    "body": r.text[:200],
-                }
-        except Exception as e:
-            results["direct_https"] = {"error": str(e)}
-        return {
-            "proxy_used": "Disabled (Direct Connection)",
-            "tests": results,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
 @app.get("/subs")
 async def subs(url: str):
     try:
         response = await fetch(url)
         content = response.content
 
-        # Try gzip decompression first
         try:
             with gzip.open(BytesIO(content), "rt", encoding="utf-8") as f:
                 text = f.read()
             if "-->" in text:
-
                 async def gen_gz():
                     yield text.encode("utf-8")
-
                 return StreamingResponse(
                     gen_gz(),
                     media_type="application/octet-stream",
-                    headers={
-                        "Content-Disposition": (
-                            "attachment; filename=subtitle.srt"
-                        )
-                    },
+                    headers={"Content-Disposition": "attachment; filename=subtitle.srt"},
                 )
         except Exception:
             pass
 
-        # Plain text fallback
         text = content.decode("utf-8", errors="ignore")
         if "-->" in text:
-
             async def gen_plain():
                 yield text.encode("utf-8")
-
             return StreamingResponse(
                 gen_plain(),
                 media_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": (
-                        "attachment; filename=subtitle.srt"
-                    )
-                },
+                headers={"Content-Disposition": "attachment; filename=subtitle.srt"},
             )
 
         raise HTTPException(status_code=500, detail="Could not parse subtitle")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error fetching subtitle: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error fetching subtitle: {str(e)}")
 
 
 @app.get("/cache/stats")
 async def get_cache_stats():
     return cache_stats()
-
 
 @app.post("/cache/clear")
 async def clear_cache(category: str = None):
@@ -626,7 +491,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={"status": exc.status_code, "detail": exc.detail},
     )
 
-
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
@@ -642,5 +506,5 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 10000))
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

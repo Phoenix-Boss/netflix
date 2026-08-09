@@ -34,8 +34,6 @@ def _is_debug():
 # ==========================================
 # CONFIGURATION
 # ==========================================
-PRIMARY_DOMAIN = "vidsrc.pm"
-
 FALLBACK_VIDSRC_DOMAINS = [
     "vidsrc.rip", "vidsrc.cc",
     "vidsrc.lol", "vidsrc.top", "vidsrc.dev",
@@ -44,17 +42,6 @@ FALLBACK_VIDSRC_DOMAINS = [
 TIMEOUT = 8
 
 _pending: dict[str, asyncio.Future] = {}
-
-
-def _get_proxy():
-    return (
-        os.environ.get("HTTPS_PROXY")
-        or os.environ.get("HTTP_PROXY")
-        or os.environ.get("https_proxy")
-        or os.environ.get("http_proxy")
-        or os.getenv("PROXY_URL")
-        or None
-    )
 
 
 # ==========================================
@@ -131,23 +118,16 @@ async def _try_o2tv(dbid, s, e, title):
 async def _try_fzmovies(dbid, title, year=None):
     """Search FZMovies with title + year to avoid wrong-version matches."""
     try:
-        # Build search query — always include year when available so we
-        # don't accidentally grab a 2016 copy when the user wants 2026.
         search_query = f"{title} {year}" if year else title
         logger.debug(f"(FZMovies) Searching for: {search_query}")
         result = await fzmovies_extract(search_query)
         if result and result.get("download_url"):
-            # Extra sanity check: if we have a year and the result contains
-            # a year in its metadata that doesn't match, skip it.
             if year:
                 result_title = (result.get("title") or "").lower()
                 result_file = (result.get("file_name") or "").lower()
                 combined = f"{result_title} {result_file}"
-                # Look for a 4-digit year in the result
                 found_years = re.findall(r"\b(19|20)\d{2}\b", combined)
                 if found_years:
-                    # If none of the years in the result match the requested
-                    # year, reject this result — it's the wrong version.
                     if str(year) not in found_years:
                         logger.debug(
                             f"(FZMovies) Year mismatch: wanted {year}, "
@@ -178,7 +158,6 @@ async def _try_kissasian(dbid, s, e, title):
                 "title": result.get("title", title),
                 "file_name": result.get("file_name", ""),
                 "backdrop": "",
-                # Flags for format_sources to inject HLS headers
                 "_is_hls": True,
                 "_hls_referer": result.get("referer", ""),
                 "_hls_origin": result.get("origin", ""),
@@ -219,7 +198,6 @@ async def _try_torrents(dbid, s, e, title):
         logger.debug(f"(Torrents) Fallback search for {title}...")
         result = await torrents_extract(dbid, s=s, e=e, title=title, quality="1080p")
         if result and result.get("_torrent_data", {}).get("magnet"):
-            # Stamp the result so format_sources knows to delegate
             result["_is_torrent"] = True
             return result
     except Exception as ex:
@@ -228,7 +206,79 @@ async def _try_torrents(dbid, s, e, title):
 
 
 # ==========================================
-# VIDSRC DOMAIN SCRAPER
+# REVERSE-ENGINEERED DIRECT API BYPASS
+# ==========================================
+async def _try_vaplayer_direct(dbid, media_type, s, e, session):
+    """
+    Bypasses vidsrc.pm embed/iframe/Turnstile entirely and hits the 
+    underlying stream API directly. Discovered via network interception.
+    """
+    try:
+        # Determine if the ID is TMDB (numeric) or IMDB (starts with tt)
+        if str(dbid).startswith("tt"):
+            id_type = "imdb"
+        else:
+            id_type = "tmdb"
+            
+        api_url = f"https://streamdata.vaplayer.ru/api.php?{id_type}={dbid}&type={media_type}"
+        
+        if media_type == "tv" and s is not None and e is not None:
+            api_url += f"&season={s}&episode={e}"
+
+        logger.debug(f"(DIRECT API) Fetching: {api_url}")
+        
+        resp = await asyncio.wait_for(
+            session.get(
+                api_url,
+                headers={
+                    # THESE HEADERS ARE MANDATORY. Without them, the API rejects the request.
+                    "Origin": "https://nextgencloudfabric.com",
+                    "Referer": "https://nextgencloudfabric.com/",
+                    "Accept": "*/*",
+                }
+            ),
+            timeout=TIMEOUT,
+        )
+        
+        if not resp or resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        if str(data.get("status_code")) != "200" or not data.get("data"):
+            return None
+
+        d = data["data"]
+        stream_urls = d.get("stream_urls", [])
+        if not stream_urls:
+            return None
+
+        # Prefer a URL that responds to a quick HEAD check
+        valid_streams = []
+        for url in stream_urls[:2]:
+            if await is_stream_alive(url, timeout=3):
+                valid_streams.append(url)
+                break
+        if not valid_streams:
+            valid_streams = stream_urls[:1]
+
+        logger.debug(f"(DIRECT API) SUCCESS: {len(valid_streams)} streams")
+        return {
+            "stream_urls": valid_streams,
+            "imdb_id": d.get("imdb_id", ""),
+            "title": d.get("title", ""),
+            "file_name": d.get("file_name", ""),
+            "backdrop": data.get("thumbnails_url", ""),
+        }
+
+    except asyncio.TimeoutError:
+        return None
+    except Exception as ex:
+        logger.debug(f"(DIRECT API) err: {ex}")
+        return None
+
+
+# ==========================================
+# LEGACY VIDSRC DOMAIN SCRAPER (FALLBACK)
 # ==========================================
 async def _try_domain(domain, dbid, media_type, s, e, session):
     try:
@@ -270,7 +320,6 @@ async def _try_domain(domain, dbid, media_type, s, e, session):
         if not resp2 or resp2.status_code != 200:
             return None
 
-        # Extract CONFIG JSON from the player page
         match = re.search(r"const CONFIG = ({.*?});", resp2.text, re.S)
         if not match:
             logger.debug(f"({domain}) Regex CONFIG failed, trying BS4 fallback...")
@@ -318,7 +367,6 @@ async def _try_domain(domain, dbid, media_type, s, e, session):
         if not stream_urls:
             return None
 
-        # Prefer a URL that responds to a quick HEAD check
         valid_streams = []
         for url in stream_urls[:2]:
             if await is_stream_alive(url, timeout=3):
@@ -347,32 +395,27 @@ async def _try_domain(domain, dbid, media_type, s, e, session):
 # EXTRACTION LOGIC
 # ==========================================
 async def _do_extract(dbid, media_type, s, e, title=None, year=None):
+    # CRITICAL: proxy=False forces curl_cffi to ignore Render's internal proxy (407 fix)
     async with AsyncSession(
-        impersonate="chrome", verify=False, proxy=_get_proxy()
+        impersonate="chrome", verify=False, proxy=False
     ) as session:
 
         # ============================================================
-        # PHASE 1 — PRIMARY SOURCE (vidsrc.pm) — always tried alone
+        # PHASE 1 — PRIMARY SOURCE (Direct API Bypass)
         # ============================================================
-        # We never race vidsrc.pm against anything. If it returns a
-        # valid result, that IS the answer — no fallbacks needed.
-        # ============================================================
-        logger.debug(f"(PRIMARY) Trying {PRIMARY_DOMAIN} for {dbid}...")
-        primary_result = await _try_domain(
-            PRIMARY_DOMAIN, dbid, media_type, s, e, session
-        )
+        logger.debug(f"(PRIMARY) Trying Direct Vaplayer API for {dbid}...")
+        primary_result = await _try_vaplayer_direct(dbid, media_type, s, e, session)
         if isinstance(primary_result, dict) and primary_result.get("stream_urls"):
-            logger.debug(f"(PRIMARY) {PRIMARY_DOMAIN} succeeded for {dbid}")
+            logger.debug(f"(PRIMARY) Direct API succeeded for {dbid}")
             return primary_result
 
         logger.debug(
-            f"(PRIMARY) {PRIMARY_DOMAIN} failed for {dbid}, "
+            f"(PRIMARY) Direct API failed for {dbid}, "
             f"entering fallback phase..."
         )
 
         # ============================================================
         # PHASE 2 — FALLBACK SOURCES (raced in parallel)
-        # Only reached if vidsrc.pm returned nothing usable.
         # ============================================================
         pending = {
             asyncio.create_task(
