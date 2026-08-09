@@ -52,7 +52,17 @@ def _is_antibot_redirect(url: str) -> bool:
     """Check if fzmovies redirected us to home/search (anti-bot)."""
     return "csearch.php" in url or url.rstrip("/") == BASE_URL.rstrip("/")
 
-async def extract(title: str, requested_quality: str = None):
+async def extract(title: str, year: int = None, requested_quality: str = None):
+    """
+    Extract a direct download link from FZMovies.
+    
+    Args:
+        title: Movie title to search for.
+        year:  Strictly required release year. If provided, a result is ONLY
+               accepted if BOTH the title similarity >= 90% AND the year matches
+               exactly. Wrong-year matches are fully rejected.
+        requested_quality: Preferred quality string (e.g. "1080p").
+    """
     if _is_debug(): logger.setLevel(logging.DEBUG)
     
     headers = {
@@ -112,19 +122,56 @@ async def extract(title: str, requested_quality: str = None):
             logger.error(f"No search results found for '{title}'")
             return None
 
-        # Sort by year descending, pick best match >= 90% similarity
-        search_results.sort(key=lambda x: x["year"], reverse=True)
-        selected_movie = None
-        
+        # ==========================================
+        # STEP 1b: Smart selection with STRICT year enforcement
+        # ==========================================
         for res in search_results:
-            sim = get_similarity(title, res["title"])
-            logger.debug(f"Result: '{res['title']}' (Year: {res['year']}, Sim: {sim:.1f}%)")
-            if sim >= 90:
-                selected_movie = res
-                break
+            res["sim"] = get_similarity(title, res["title"])
+
+        selected_movie = None
+
+        if year:
+            logger.debug(f"Strict year enforcement: targeting {year}")
+            
+            # ONLY accept if title matches AND year matches exactly
+            valid_matches = [
+                r for r in search_results
+                if r["year"] == year and r["sim"] >= 90
+            ]
+            
+            if valid_matches:
+                # Among valid matches, pick highest similarity
+                valid_matches.sort(key=lambda x: x["sim"], reverse=True)
+                selected_movie = valid_matches[0]
+                logger.debug(
+                    f"Strict match: '{selected_movie['title']}' "
+                    f"(year={selected_movie['year']}, sim={selected_movie['sim']:.1f}%)"
+                )
+            else:
+                # Check if we missed purely because of the year to log accurately
+                close_title_wrong_year = [r for r in search_results if r["sim"] >= 90]
+                if close_title_wrong_year:
+                    wrong_years = [str(r["year"]) for r in close_title_wrong_year]
+                    logger.debug(
+                        f"Found title matches for years [{', '.join(wrong_years)}], "
+                        f"but strictly need {year} — REJECTING result."
+                    )
+                else:
+                    logger.debug(f"No title match >= 90% found for year {year}")
+                    
+        else:
+            # Original behaviour: newest year first, >= 90% similarity
+            search_results.sort(key=lambda x: x["year"], reverse=True)
+            for res in search_results:
+                logger.debug(
+                    f"Result: '{res['title']}' "
+                    f"(Year: {res['year']}, Sim: {res['sim']:.1f}%)"
+                )
+                if res["sim"] >= 90:
+                    selected_movie = res
+                    break
 
         if not selected_movie:
-            logger.error(f"No match above 90% threshold")
             return None
 
         logger.debug(f"Selected Movie: {selected_movie['title']}")
@@ -132,7 +179,6 @@ async def extract(title: str, requested_quality: str = None):
         # ==========================================
         # STEP 2: Movie Page (Quality Links)
         # ==========================================
-        # fzmovies requires strict URL encoding for their movie pages
         raw_path = selected_movie['url'].replace(BASE_URL, "").lstrip('/')
         encoded_path = quote(raw_path)
         movie_url = f"{BASE_URL}/{encoded_path}"
@@ -187,13 +233,11 @@ async def extract(title: str, requested_quality: str = None):
                 dl1_soup = BeautifulSoup(resp.text, "html.parser")
                 download_btn = None
 
-                # Look for links pointing to download.php
                 for a in dl1_soup.find_all("a", href=True):
                     if "download.php" in a["href"]:
                         download_btn = urljoin(quality["url"], a["href"])
                         break
 
-                # Fallback: Look for generic DOWNLOAD text buttons
                 if not download_btn:
                     for a in dl1_soup.find_all("a", href=True):
                         if "DOWNLOAD" in a.get_text(strip=True).upper() and "http" not in a["href"].lower():
@@ -204,7 +248,6 @@ async def extract(title: str, requested_quality: str = None):
                     logger.debug("No download.php button found")
                     continue
 
-                # Hit the final download page
                 resp = await session.get(download_btn, headers={**headers, "Referer": quality["url"]}, allow_redirects=True, timeout=30)
                 
                 if resp.status_code != 200 or _is_antibot_redirect(resp.url):
@@ -214,13 +257,11 @@ async def extract(title: str, requested_quality: str = None):
                 dl_soup = BeautifulSoup(resp.text, "html.parser")
                 direct_links = []
                 
-                # Extract direct links (patterns usually involve dl, download, mirror, etc.)
                 for a in dl_soup.find_all("a", href=True):
                     href = a["href"]
                     if any(x in href for x in ["dl", "download.", "mirror", "file=", "key="]):
                         direct_links.append(urljoin(resp.url, href))
 
-                # Regex fallback for direct links
                 if not direct_links:
                     direct_links = re.findall(r'href=["\'](https?://[^"\']*(?:dl|download|mirror)[^"\']*)["\']', resp.text, re.IGNORECASE)
 
@@ -273,7 +314,6 @@ async def extract(title: str, requested_quality: str = None):
                         break
         else:
             selected = final_results[0]
-            # Auto-detect actual quality for metadata
             for q in ["2160p", "4k", "1080p", "720p", "480p"]:
                 if q in selected['file'].lower():
                     actual_quality = q
@@ -290,7 +330,8 @@ async def extract(title: str, requested_quality: str = None):
             "needs_transcode": needs_transcode,
             "title": selected['file'],
             "size": selected['size'],
-            "show": title # Kept for format_source compatibility
+            "show": title,
+            "year": selected_movie.get("year", 0),
         }
 
 
@@ -307,6 +348,7 @@ def format_source(result: dict, subs=None, needs_transcode: bool = False):
             "quality": result.get("quality", "auto"),
             "title": result.get("title", result.get("show", "")),
             "size": result.get("size", ""),
-            "needs_transcode": result.get("needs_transcode", needs_transcode)
+            "needs_transcode": result.get("needs_transcode", needs_transcode),
+            "year": result.get("year", 0),
         }
     }]
